@@ -17,6 +17,9 @@ class CalibrationTable(BaseModel):
     # Подписи осей для UI: «Engine Load, g/rev»; пусто — оси нет
     x_title: str = ""
     y_title: str = ""
+    # Другие таблицы на той же оси в ROM: правка оси меняет и их ось (значения — нет)
+    x_shared_with: list[str] = Field(default_factory=list)
+    y_shared_with: list[str] = Field(default_factory=list)
     unit: str = ""
     # Шаги изменения из scaling (fineincrement / coarseincrement), если заданы
     fine_increment: float | None = None

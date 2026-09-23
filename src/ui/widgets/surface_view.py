@@ -7,7 +7,7 @@ import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 from OpenGL import GL
 from PyQt6.QtCore import QEvent, QObject, QPointF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QMouseEvent, QResizeEvent
+from PyQt6.QtGui import QFontMetrics, QMouseEvent, QPainter, QResizeEvent, QTransform, QVector3D
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 # Размер сцены: оси X/Y нормируются в [0, SIZE_XY], значения — в [0, SIZE_Z]
@@ -37,11 +37,17 @@ PICK_RADIUS_PX = 16
 # Узлы в пределах этого зазора считаются перекрывающимися на экране
 PICK_OVERLAP_PX = 3
 
+# Размер подписей осей в сцене: единиц сцены на пиксель шрифта.
+# При вписанной камере и окне ~700×500 шрифт 16 px выглядит примерно как 16 px на экране
+AXIS_LABEL_WORLD_PER_PX = 0.03
+# Зазор между названием оси и диапазоном (две строки в одной точке), в пикселях шрифта
+AXIS_LABEL_LINE_GAP_PX = 2
+
 # Ячейки с inf/nan (деление на ноль в scaling) — серые и лежат на уровне минимума
 NON_FINITE_RGBA = (0.6, 0.6, 0.6, 1.0)
 
 # Классическая «тюнинговая» шкала: синий (мин) → красный (макс)
-_CMAP = pg.ColorMap(
+VALUE_COLORMAP = pg.ColorMap(
     pos=[0.0, 0.25, 0.5, 0.75, 1.0],
     color=[
         (40, 80, 220),
@@ -84,8 +90,100 @@ def _axis_caption(name: str, title: str, values: list[float], labels: list[str] 
     return title or name, f"{first} … {last}"
 
 
+class AxisTextItem(gl.GLTextItem):
+    """Подпись оси, лежащая в сцене вдоль направления оси.
+
+    Базовая линия текста всегда совпадает с осью; плоскость текста только поворачивается
+    вокруг этой оси, разворачиваясь к камере. Размер задан в единицах сцены, поэтому
+    подпись ведёт себя как объект сцены (масштабируется колесом вместе с сеткой).
+    Читаемость: направление чтения выбирается слева направо, текст не зеркалится.
+    """
+
+    def __init__(self, direction: tuple[float, float, float], **kwds: object) -> None:
+        super().__init__(**kwds)
+        self._direction = np.asarray(direction, dtype=float)
+        self._direction /= np.linalg.norm(self._direction)
+
+    def paint(self) -> None:
+        if len(self.text) < 1:
+            return
+        view = self.view()
+        if view is None:
+            return
+        self.setupGLState()
+
+        anchor = np.asarray(self.pos, dtype=float)
+        camera = view.cameraPosition()
+        to_camera = np.array([camera.x(), camera.y(), camera.z()]) - anchor
+        axis = self._direction
+        # Нормаль плоскости текста — направление на камеру без составляющей вдоль оси:
+        # плоскость может только вращаться вокруг оси
+        normal = to_camera - to_camera.dot(axis) * axis
+        norm = np.linalg.norm(normal)
+        if norm < 1e-9:
+            return  # смотрим точно вдоль оси — подпись видна ребром
+        normal /= norm
+        up = np.cross(normal, axis)
+
+        project = self.compute_projection()
+
+        def screen(point: np.ndarray) -> QPointF:
+            return project.map(QVector3D(*(float(c) for c in point))).toPointF()
+
+        origin = screen(anchor)
+        scale = AXIS_LABEL_WORLD_PER_PX
+        along = screen(anchor + axis * scale) - origin
+        down = screen(anchor - up * scale) - origin
+        # Читаем слева направо: если ось на экране смотрит влево — разворачиваем текст
+        # вокруг нормали (и ось, и «верх» меняют знак)
+        if along.x() < 0:
+            along, down = -along, -down
+        det = along.x() * down.y() - along.y() * down.x()
+        if abs(det) < 1e-6:
+            return
+        # Без зеркалирования: «низ» текста должен быть по часовой стрелке от направления чтения
+        if det < 0:
+            down = -down
+
+        painter = QPainter(view)
+        painter.setPen(self.color)
+        painter.setFont(self.font)
+        painter.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing)
+        # Шрифтовые пиксели → экран: локально аффинная проекция плоскости текста
+        painter.setTransform(
+            QTransform(along.x(), along.y(), down.x(), down.y(), origin.x(), origin.y())
+        )
+        painter.drawText(self._aligned_offset(), self.text)
+        painter.end()
+
+    def _aligned_offset(self) -> QPointF:
+        """Позиция базовой линии текста относительно точки привязки в системе текста.
+
+        По вертикали — по ascent/descent шрифта, а не по tightBoundingRect: две строки
+        в одной точке (AlignBottom над ней, AlignTop под ней) не налезают друг на друга.
+        """
+        metrics = QFontMetrics(self.font)
+        width = metrics.horizontalAdvance(self.text)
+        dx = 0.0
+        if self.alignment & Qt.AlignmentFlag.AlignRight:
+            dx = width
+        elif self.alignment & Qt.AlignmentFlag.AlignHCenter:
+            dx = width / 2.0
+        gap = AXIS_LABEL_LINE_GAP_PX / 2.0
+        if self.alignment & Qt.AlignmentFlag.AlignTop:
+            baseline = metrics.ascent() + gap
+        elif self.alignment & Qt.AlignmentFlag.AlignBottom:
+            baseline = -metrics.descent() - gap
+        else:
+            baseline = (metrics.ascent() - metrics.descent()) / 2.0
+        return QPointF(-dx, baseline)
+
+
 class SurfaceView(QWidget):
-    """3D-вид калибровочной таблицы: меш с цветом по значению и подсветкой выделения."""
+    """3D-вид 3D-таблицы: меш с цветом по значению и подсветкой выделения.
+
+    2D-таблицы (векторы) рисует CurveView, этот вид для них пустой.
+    """
 
     # row, col, additive (Ctrl/Cmd+клик — добавить к выделению)
     point_clicked = pyqtSignal(int, int, bool)
@@ -116,8 +214,6 @@ class SurfaceView(QWidget):
             smooth=False,
             computeNormals=False,
         )
-        self._line = gl.GLLinePlotItem(width=3, antialias=True)
-        self._points = gl.GLScatterPlotItem(size=8, glOptions="opaque")
         # Выделение: маркер в узле (обводка + заливка) и тонкая «ножка» до пола
         self._selected_stems = gl.GLLinePlotItem(
             mode="lines",
@@ -136,7 +232,8 @@ class SurfaceView(QWidget):
         self._selected.setDepthValue(12)
         # Подписи привязаны к точке центром (по умолчанию — левым нижним углом).
         # GLTextItem однострочный, поэтому у осей две подписи в одной точке:
-        # название — над ней, диапазон — под ней.
+        # название — над ней, диапазон — под ней. Подписи осей X/Y лежат вдоль своего
+        # ребра сетки и вращаются только вокруг него (AxisTextItem), подписи Z — экранные.
         center = Qt.AlignmentFlag.AlignCenter
         above = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom
         below = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
@@ -148,8 +245,18 @@ class SurfaceView(QWidget):
             "z_min": center,
             "z_max": center,
         }
-        self._labels = {
-            key: gl.GLTextItem(color=LABEL_RGBA, alignment=alignment)
+        label_direction = {
+            "x_title": (1.0, 0.0, 0.0),
+            "x_range": (1.0, 0.0, 0.0),
+            "y_title": (0.0, 1.0, 0.0),
+            "y_range": (0.0, 1.0, 0.0),
+        }
+        self._labels: dict[str, gl.GLTextItem] = {
+            key: (
+                AxisTextItem(label_direction[key], color=LABEL_RGBA, alignment=alignment)
+                if key in label_direction
+                else gl.GLTextItem(color=LABEL_RGBA, alignment=alignment)
+            )
             for key, alignment in label_alignment.items()
         }
         for item in self._items():
@@ -185,8 +292,6 @@ class SurfaceView(QWidget):
     def _items(self) -> tuple[gl.GLGraphicsItem, ...]:
         return (
             self._surface,
-            self._line,
-            self._points,
             self._selected_stems,
             self._selected_outline,
             self._selected,
@@ -309,7 +414,7 @@ class SurfaceView(QWidget):
         grid_x, grid_y = np.meshgrid(xs, ys)
         self._node_pos = np.stack([grid_x, grid_y, zs], axis=-1)
 
-        colors = _CMAP.map(zn.ravel(), mode="float").reshape(rows, cols, 4)
+        colors = VALUE_COLORMAP.map(zn.ravel(), mode="float").reshape(rows, cols, 4)
         colors[~finite] = NON_FINITE_RGBA
         cells = [(r, c) for r, c in (selected or ()) if r < rows and c < cols]
 

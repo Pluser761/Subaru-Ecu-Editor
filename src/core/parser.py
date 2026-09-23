@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 
 from src.core.models import CalibrationTable, MapInfo, RomDefinition, TableDef
 from src.core.rom_io import (
     axis_title,
+    is_writable_axis,
     read_axis_labels,
     read_axis_values,
     read_table_matrix,
@@ -31,6 +33,7 @@ class EcuParser:
         self.rom_bytes: bytearray = bytearray(rom_bytes or b"")
         self.definition: RomDefinition | None = definition
         self.defs_repo = defs_repo
+        self._axis_users: dict[int, list[str]] | None = None
 
     @classmethod
     def open_rom(
@@ -87,6 +90,30 @@ class EcuParser:
         maps.sort(key=lambda m: (m.category, m.name))
         return maps
 
+    def axis_users(self) -> dict[int, list[str]]:
+        """Адрес оси в ROM → редактируемые таблицы, которые её используют."""
+        if self._axis_users is None:
+            users: dict[int, list[str]] = defaultdict(list)
+            tables = self.definition.tables if self.definition else {}
+            for name, t in tables.items():
+                if t.table_type not in EDITABLE_TABLE_TYPES or t.storageaddress is None:
+                    continue
+                for axis in (t.x_axis, t.y_axis):
+                    if is_writable_axis(axis):
+                        assert axis is not None and axis.storageaddress is not None
+                        users[axis.storageaddress].append(name)
+            self._axis_users = dict(users)
+        return self._axis_users
+
+    def shared_axis_tables(self, map_id: str, axis: str) -> list[str]:
+        """Другие таблицы на той же оси в ROM (axis: "x" или "y"); пусто — ось не общая."""
+        table = self.get_table_def(map_id)
+        axis_def = table.x_axis if axis == "x" else table.y_axis
+        if not is_writable_axis(axis_def):
+            return []
+        assert axis_def is not None and axis_def.storageaddress is not None
+        return [name for name in self.axis_users().get(axis_def.storageaddress, []) if name != map_id]
+
     def get_table_def(self, map_id: str) -> TableDef:
         if self.definition is None:
             raise KeyError("ROM definition is not loaded")
@@ -136,6 +163,8 @@ class EcuParser:
             y_labels=read_axis_labels(table.y_axis, rows),
             x_title=axis_title(table.x_axis) if cols > 1 else "",
             y_title=axis_title(table.y_axis) if rows > 1 else "",
+            x_shared_with=self.shared_axis_tables(map_id, "x") if cols > 1 else [],
+            y_shared_with=self.shared_axis_tables(map_id, "y") if rows > 1 else [],
             unit=unit,
             fine_increment=scaling.fine_increment if scaling else None,
             coarse_increment=scaling.coarse_increment if scaling else None,

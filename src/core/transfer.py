@@ -287,18 +287,6 @@ def _span(axis: np.ndarray) -> tuple[float, float] | None:
     return (float(axis[0]), float(axis[-1])) if len(axis) > 1 else None
 
 
-def _axis_users(target: EcuParser) -> dict[int, list[str]]:
-    """Адрес оси в ROM → таблицы A, которые её используют."""
-    assert target.definition is not None
-    users: dict[int, list[str]] = defaultdict(list)
-    for name, t in _transferable(target.definition.tables).items():
-        for axis in (t.x_axis, t.y_axis):
-            if is_writable_axis(axis):
-                assert axis is not None and axis.storageaddress is not None
-                users[axis.storageaddress].append(name)
-    return users
-
-
 def apply_transfer(
     source: EcuParser,
     target: EcuParser,
@@ -331,7 +319,7 @@ def apply_transfer(
             selected.append(name)
 
     source_grids = {name: _read_grid(source, name) for name in selected}
-    users = _axis_users(target)
+    users = target.axis_users()
     before: dict[str, _Grid] = {}
 
     def snapshot(name: str) -> None:

@@ -230,7 +230,9 @@ class MainPresenter:
             return
         editor.update_axis(orientation, index, stored)
         self._dirty = True
-        self._window.set_status(f"Ось {axis.upper()} [{map_id}] {index} = {stored:.2f}")
+        shared = self._parser.shared_axis_tables(map_id, axis)
+        note = f" — ось общая, изменилась и у других таблиц: {len(shared)}" if shared else ""
+        self._window.set_status(f"Ось {axis.upper()} [{map_id}] {index} = {stored:.2f}{note}")
 
     def on_matrix_copied(self, rows: int, cols: int) -> None:
         self._window.set_status(f"Скопировано {rows}×{cols}")

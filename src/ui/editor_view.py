@@ -37,12 +37,19 @@ class EditorView(QWidget):
         self._map_tree.setHeaderLabel("Maps")
         self._map_tree.setMinimumWidth(200)
         self._map_tree.itemClicked.connect(self._on_tree_clicked)
+        # →/← на карте: открыть её / вернуться к категории и свернуть
+        self._map_tree.installEventFilter(self)
 
         self._title = QLabel("Select a map")
         self._title.setStyleSheet("font-size: 14px; font-weight: 600;")
 
         self._meta = QLabel("")
         self._meta.setStyleSheet("color: #666;")
+
+        # Ось, которую используют и другие таблицы: её правка меняет ось и у них
+        self._shared_axes = QLabel("")
+        self._shared_axes.setStyleSheet("color: #b36b00;")
+        self._shared_axes.setVisible(False)
 
         self._table = TableEditor()
         self._surface = SurfaceView()
@@ -82,6 +89,7 @@ class EditorView(QWidget):
         right.setContentsMargins(8, 0, 0, 0)
         right.addWidget(self._title)
         right.addWidget(self._meta)
+        right.addWidget(self._shared_axes)
         checkpoint_btn = QPushButton("Set checkpoint")
         checkpoint_btn.setToolTip(
             "Запомнить текущие значения как точку отсчёта. Изменённые после этого ячейки "
@@ -166,6 +174,7 @@ class EditorView(QWidget):
         self._meta.setText(f"{table.rows} × {table.cols}{unit}")
         self._table.set_table(table)
         self._set_axis_titles(table.x_title, table.y_title)
+        self._set_shared_axes(table.x_shared_with, table.y_shared_with)
         if checkpoint is not None:
             self._table.set_checkpoint_values(checkpoint)
         self._steps.set_increments(table.fine_increment, table.coarse_increment)
@@ -176,6 +185,7 @@ class EditorView(QWidget):
         self._meta.setText("")
         self._table.set_table(None)
         self._set_axis_titles("", "")
+        self._set_shared_axes([], [])
         self._surface.clear()
 
     def _on_tree_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
@@ -189,6 +199,24 @@ class EditorView(QWidget):
         self._y_title.setText(y_title)
         self._y_title.setVisible(bool(y_title))
         self._surface_titles = (x_title, y_title)
+
+    def _set_shared_axes(self, x_shared: list[str], y_shared: list[str]) -> None:
+        parts: list[str] = []
+        tips: list[str] = []
+        for axis, names in (("X", x_shared), ("Y", y_shared)):
+            if names:
+                parts.append(f"ось {axis} — ещё {len(names)} {_tables_word(len(names))}")
+                tips.append(f"Ось {axis} общая с:\n" + "\n".join(f"  • {n}" for n in names))
+        if parts:
+            self._shared_axes.setText("⚠ Общая " + "; ".join(parts))
+            self._shared_axes.setToolTip(
+                "\n\n".join(tips)
+                + "\n\nПравка общей оси меняет её и в этих таблицах; их значения не пересчитываются."
+            )
+        else:
+            self._shared_axes.setText("")
+            self._shared_axes.setToolTip("")
+        self._shared_axes.setVisible(bool(parts))
 
     def _schedule_surface(self, *_args: object) -> None:
         self._surface_timer.start()
@@ -213,6 +241,10 @@ class EditorView(QWidget):
         return self._steps
 
     def eventFilter(self, obj: QObject | None, event: QEvent | None) -> bool:
+        if obj is self._map_tree:
+            if isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
+                return self._handle_tree_key(event)
+            return super().eventFilter(obj, event)
         if isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
             action = self._key_bindings.action_for(event)
             if action is not None and self._table.rowCount() > 0:
@@ -223,6 +255,26 @@ class EditorView(QWidget):
                     self._table.operation_info.emit(f"{delta:+.2f} → ячеек: {count}")
                 return True
         return super().eventFilter(obj, event)
+
+    def _handle_tree_key(self, event: QKeyEvent) -> bool:
+        """→ на карте открывает её, ← на карте сворачивает её категорию.
+
+        На категориях работает стандартное поведение QTreeWidget: → раскрывает, ← сворачивает.
+        """
+        if event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier:
+            return False
+        item = self._map_tree.currentItem()
+        category = item.parent() if item is not None else None
+        if item is None or category is None:
+            return False
+        if event.key() == Qt.Key.Key_Right:
+            self._on_tree_clicked(item, 0)
+            return True
+        if event.key() == Qt.Key.Key_Left:
+            self._map_tree.setCurrentItem(category)
+            category.setExpanded(False)
+            return True
+        return False
 
     def _set_checkpoint(self) -> None:
         if self._table.rowCount() == 0:
@@ -238,3 +290,12 @@ class EditorView(QWidget):
         else:
             self._table.setCurrentCell(row, col)
         self._table.scrollToItem(self._table.item(row, col))
+
+
+def _tables_word(n: int) -> str:
+    """Согласование: 1 таблица, 2 таблицы, 5 таблиц."""
+    if n % 10 == 1 and n % 100 != 11:
+        return "таблица"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return "таблицы"
+    return "таблиц"

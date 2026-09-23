@@ -31,6 +31,7 @@ from src.core.models import CalibrationTable
 
 STATIC_AXIS_MESSAGE = "Статическая ось задана в definition и не редактируется"
 NON_NUMERIC_CLIPBOARD_MESSAGE = "Буфер обмена содержит нечисловые данные"
+CLIPBOARD_UNAVAILABLE_MESSAGE = "Буфер обмена недоступен"
 
 
 # Рамка ячейки относительно checkpoint: выросло — красная, уменьшилось — синяя
@@ -57,7 +58,8 @@ def parse_cell_value(text: str) -> float:
 class DecimalInputValidator(QValidator):
     """Цифры, один разделитель (точка или запятая) и минус в начале."""
 
-    def validate(self, text: str, pos: int) -> tuple[QValidator.State, str, int]:
+    def validate(self, text: str | None, pos: int) -> tuple[QValidator.State, str, int]:
+        text = text or ""
         body = text[1:] if text.startswith("-") else text
 
         for ch in body:
@@ -103,7 +105,7 @@ class DecimalCellDelegate(QStyledItemDelegate):
 
     def createEditor(
         self,
-        parent: QWidget,
+        parent: QWidget | None,
         option: QStyleOptionViewItem,
         index: QModelIndex,
     ) -> QWidget:
@@ -112,13 +114,15 @@ class DecimalCellDelegate(QStyledItemDelegate):
         editor.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         return editor
 
-    def setEditorData(self, editor: QWidget, index: QModelIndex) -> None:
-        assert isinstance(editor, QLineEdit)
+    def setEditorData(self, editor: QWidget | None, index: QModelIndex) -> None:
+        if not isinstance(editor, QLineEdit):
+            return
         editor.setText(index.data(Qt.ItemDataRole.DisplayRole) or "")
         editor.selectAll()
 
-    def setModelData(self, editor: QWidget, model, index: QModelIndex) -> None:
-        assert isinstance(editor, QLineEdit)
+    def setModelData(self, editor: QWidget | None, model, index: QModelIndex) -> None:
+        if not isinstance(editor, QLineEdit):
+            return
         raw = editor.text().strip()
         try:
             value = parse_cell_value(raw)
@@ -169,6 +173,11 @@ class EditableHeaderView(QHeaderView):
             return
         super().keyPressEvent(event)
 
+    def _update_viewport(self) -> None:
+        viewport = self.viewport()
+        if viewport is not None:
+            viewport.update()
+
     def copy_axis(self) -> None:
         table = self.parent()
         if not isinstance(table, TableEditor):
@@ -176,17 +185,21 @@ class EditableHeaderView(QHeaderView):
         sections = self._sections_for_clipboard(table)
         if not sections:
             return
+        clipboard = QApplication.clipboard()
+        if clipboard is None:
+            table.operation_error.emit(CLIPBOARD_UNAVAILABLE_MESSAGE)
+            return
         labels = table.axis_labels(self.orientation())
         if labels is not None:
             # Статическая ось: копируем подписи как есть («1st», «Enable Above»)
-            QApplication.clipboard().setText("\t".join(labels[i] for i in sections if 0 <= i < len(labels)))
+            clipboard.setText("\t".join(labels[i] for i in sections if 0 <= i < len(labels)))
             return
         if self.orientation() == Qt.Orientation.Horizontal:
             axis = table.get_x_axis()
         else:
             axis = table.get_y_axis()
         values = [axis[i] for i in sections if 0 <= i < len(axis)]
-        QApplication.clipboard().setText(format_axis(values))
+        clipboard.setText(format_axis(values))
 
     def paste_axis(self) -> None:
         table = self.parent()
@@ -195,7 +208,11 @@ class EditableHeaderView(QHeaderView):
         if table.axis_labels(self.orientation()) is not None:
             table.operation_error.emit(STATIC_AXIS_MESSAGE)
             return
-        text = QApplication.clipboard().text()
+        clipboard = QApplication.clipboard()
+        if clipboard is None:
+            table.operation_error.emit(CLIPBOARD_UNAVAILABLE_MESSAGE)
+            return
+        text = clipboard.text()
         try:
             values = parse_axis(text)
         except ValueError:
@@ -225,7 +242,7 @@ class EditableHeaderView(QHeaderView):
             written += 1
         if written:
             self.axis_pasted.emit(written)
-            self.viewport().update()
+            self._update_viewport()
             table.operation_info.emit(f"Вставлено в ось: {written}")
 
     def _sections_for_clipboard(self, table: TableEditor) -> list[int]:
@@ -308,7 +325,7 @@ class EditableHeaderView(QHeaderView):
         try:
             value = parse_cell_value(raw)
         except ValueError:
-            self.viewport().update()
+            self._update_viewport()
             return
 
         formatted = format_cell_value(value)
@@ -321,7 +338,7 @@ class EditableHeaderView(QHeaderView):
                 Qt.ItemDataRole.EditRole,
             )
         self.label_edited.emit(section, value)
-        self.viewport().update()
+        self._update_viewport()
 
     def _cancel_edit(self) -> None:
         if self._editor is None:
@@ -330,7 +347,7 @@ class EditableHeaderView(QHeaderView):
         self._editor = None
         self._edit_section = -1
         editor.deleteLater()
-        self.viewport().update()
+        self._update_viewport()
 
     def eventFilter(self, obj, event) -> bool:  # type: ignore[no-untyped-def]
         if obj is self._editor and event is not None:
@@ -448,11 +465,19 @@ class TableEditor(QTableWidget):
                 except ValueError:
                     row.append(0.0)
             matrix.append(row)
-        QApplication.clipboard().setText(format_matrix(matrix))
+        clipboard = QApplication.clipboard()
+        if clipboard is None:
+            self.operation_error.emit(CLIPBOARD_UNAVAILABLE_MESSAGE)
+            return
+        clipboard.setText(format_matrix(matrix))
         self.matrix_copied.emit(len(matrix), len(matrix[0]) if matrix else 0)
 
     def paste_selection(self) -> None:
-        text = QApplication.clipboard().text()
+        clipboard = QApplication.clipboard()
+        if clipboard is None:
+            self.operation_error.emit(CLIPBOARD_UNAVAILABLE_MESSAGE)
+            return
+        text = clipboard.text()
         try:
             matrix = parse_matrix(text)
         except ValueError:
