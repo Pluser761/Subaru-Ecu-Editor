@@ -100,6 +100,17 @@ def is_static_axis(axis: AxisDef | None) -> bool:
     return axis is not None and (axis.axis_type.startswith("Static") or bool(axis.static_data))
 
 
+def axis_title(axis: AxisDef | None) -> str:
+    """Название оси с единицами: «Engine Speed, RPM». Единицы не дублируются, если уже в имени."""
+    if axis is None:
+        return ""
+    name = axis.name.strip()
+    units = axis.scaling.units.strip() if axis.scaling else ""
+    if units and units.lower() not in name.lower():
+        return f"{name}, {units}" if name else units
+    return name
+
+
 def read_axis_labels(axis: AxisDef | None, expected_len: int) -> list[str] | None:
     """Подписи статической оси как в definition; None для оси из ROM.
 

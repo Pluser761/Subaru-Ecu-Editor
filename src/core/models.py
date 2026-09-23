@@ -14,6 +14,9 @@ class CalibrationTable(BaseModel):
     # Такие оси не хранятся в ROM и не редактируются; None — ось числовая из ROM.
     x_labels: list[str] | None = None
     y_labels: list[str] | None = None
+    # Подписи осей для UI: «Engine Load, g/rev»; пусто — оси нет
+    x_title: str = ""
+    y_title: str = ""
     unit: str = ""
     # Шаги изменения из scaling (fineincrement / coarseincrement), если заданы
     fine_increment: float | None = None

@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QSplitter,
     QFrame,
+    QGridLayout,
     QPushButton,
     QTableWidgetSelectionRange,
 )
@@ -20,6 +21,7 @@ from src.ui.key_bindings import Action, KeyBindings, is_fine_modifier
 from src.ui.widgets.step_controls import StepControls
 from src.ui.widgets.surface_view import SurfaceView
 from src.ui.widgets.table_editor import TableEditor
+from src.ui.widgets.vertical_label import VerticalLabel
 
 
 class EditorView(QWidget):
@@ -46,9 +48,24 @@ class EditorView(QWidget):
         self._surface = SurfaceView()
         self._steps = StepControls()
 
-        # Клавиши шага работают, когда в фокусе таблица или 3D-вид
-        self._table.installEventFilter(self)
-        self._surface.gl_widget.installEventFilter(self)
+        # Клавиши шага работают, когда в фокусе таблица, её заголовки
+        # (после клика по заголовку фокус у него) или 3D-вид
+        for widget in (
+            self._table,
+            self._table.horizontalHeader(),
+            self._table.verticalHeader(),
+            self._surface.gl_widget,
+        ):
+            if widget is not None:
+                widget.installEventFilter(self)
+
+        # Заголовки осей: X — над столбцами, Y — вертикально слева от строк
+        self._x_title = QLabel()
+        self._x_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._y_title = VerticalLabel()
+        for title in (self._x_title, self._y_title):
+            title.setStyleSheet("color: #444; font-weight: 600;")
+        self._surface_titles = ("", "")
 
         # Правки/вставки шлют сигнал на каждую ячейку — схлопываем в одну перерисовку
         self._surface_timer = QTimer(self)
@@ -76,11 +93,21 @@ class EditorView(QWidget):
         edit_row.addWidget(checkpoint_btn)
         right.addLayout(edit_row)
 
-        table_frame = QFrame()
-        table_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        table_layout = QVBoxLayout(table_frame)
+        grid_frame = QFrame()
+        grid_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        grid_frame_layout = QVBoxLayout(grid_frame)
+        grid_frame_layout.setContentsMargins(0, 0, 0, 0)
+        grid_frame_layout.addWidget(self._table)
+
+        table_frame = QWidget()
+        table_layout = QGridLayout(table_frame)
         table_layout.setContentsMargins(0, 0, 0, 0)
-        table_layout.addWidget(self._table)
+        table_layout.setSpacing(2)
+        table_layout.addWidget(self._x_title, 0, 1)
+        table_layout.addWidget(self._y_title, 1, 0)
+        table_layout.addWidget(grid_frame, 1, 1)
+        table_layout.setRowStretch(1, 1)
+        table_layout.setColumnStretch(1, 1)
 
         content_splitter = QSplitter(Qt.Orientation.Vertical)
         content_splitter.addWidget(table_frame)
@@ -138,6 +165,7 @@ class EditorView(QWidget):
         unit = f" · {table.unit}" if table.unit else ""
         self._meta.setText(f"{table.rows} × {table.cols}{unit}")
         self._table.set_table(table)
+        self._set_axis_titles(table.x_title, table.y_title)
         if checkpoint is not None:
             self._table.set_checkpoint_values(checkpoint)
         self._steps.set_increments(table.fine_increment, table.coarse_increment)
@@ -147,12 +175,20 @@ class EditorView(QWidget):
         self._title.setText("Select a map")
         self._meta.setText("")
         self._table.set_table(None)
+        self._set_axis_titles("", "")
         self._surface.clear()
 
     def _on_tree_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         map_id = item.data(0, int(Qt.ItemDataRole.UserRole))
         if map_id:
             self.map_selected.emit(str(map_id))
+
+    def _set_axis_titles(self, x_title: str, y_title: str) -> None:
+        self._x_title.setText(x_title)
+        self._x_title.setVisible(bool(x_title))
+        self._y_title.setText(y_title)
+        self._y_title.setVisible(bool(y_title))
+        self._surface_titles = (x_title, y_title)
 
     def _schedule_surface(self, *_args: object) -> None:
         self._surface_timer.start()
@@ -168,6 +204,8 @@ class EditorView(QWidget):
             self._table.selected_cells(),
             x_labels=self._table.axis_labels(Qt.Orientation.Horizontal),
             y_labels=self._table.axis_labels(Qt.Orientation.Vertical),
+            x_title=self._surface_titles[0],
+            y_title=self._surface_titles[1],
         )
 
     @property

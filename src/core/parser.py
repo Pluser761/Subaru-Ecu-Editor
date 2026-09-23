@@ -4,6 +4,7 @@ from pathlib import Path
 
 from src.core.models import CalibrationTable, MapInfo, RomDefinition, TableDef
 from src.core.rom_io import (
+    axis_title,
     read_axis_labels,
     read_axis_values,
     read_table_matrix,
@@ -133,6 +134,8 @@ class EcuParser:
             y_axis=y_axis,
             x_labels=read_axis_labels(table.x_axis, cols),
             y_labels=read_axis_labels(table.y_axis, rows),
+            x_title=axis_title(table.x_axis) if cols > 1 else "",
+            y_title=axis_title(table.y_axis) if rows > 1 else "",
             unit=unit,
             fine_increment=scaling.fine_increment if scaling else None,
             coarse_increment=scaling.coarse_increment if scaling else None,

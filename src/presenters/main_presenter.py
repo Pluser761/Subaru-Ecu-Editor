@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt
 
 from src.core.parser import EcuParser
 from src.core.xml_reader import EcuDefsRepository
+from src.ui.app_settings import AppSettings
 from src.ui.main_window import MainWindow
 
 DEFAULT_DEFS = Path(__file__).resolve().parents[2] / "definitions" / "ecu_defs.xml"
@@ -20,8 +21,11 @@ class MainPresenter:
         parser: EcuParser | None = None,
         *,
         defs_path: str | Path | None = None,
+        settings: AppSettings | None = None,
     ) -> None:
         self._window = window
+        # None — без сохранения настроек (тесты, встраивание)
+        self._settings = settings
         self._parser = parser or EcuParser()
         self._defs_path = Path(defs_path) if defs_path else DEFAULT_DEFS
         self._defs_repo: EcuDefsRepository | None = None
@@ -45,9 +49,29 @@ class MainPresenter:
         editor.table_editor.operation_error.connect(self.on_operation_error)
         editor.table_editor.operation_info.connect(self.on_operation_info)
 
+        if settings is not None:
+            window.key_bindings.set_keys(settings.load_key_bindings())
+            window.key_bindings.changed.connect(
+                lambda: settings.save_key_bindings(window.key_bindings.as_dict())
+            )
+
         self._window.editor_view.clear_table()
         self._window.editor_view.set_maps([])
         self._window.set_status("Откройте ROM (File → Open ROM)")
+
+    def restore_last_rom(self) -> None:
+        """Открыть ROM, который был открыт в прошлый раз (checkpoint не восстанавливаются)."""
+        if self._settings is None:
+            return
+        path = self._settings.last_rom_path()
+        if not path:
+            return
+        if not Path(path).is_file():
+            # Файл переместили/удалили — забываем, чтобы не спотыкаться при каждом запуске
+            self._settings.set_last_rom_path(None)
+            self._window.set_error(f"Прошлая прошивка не найдена: {path}")
+            return
+        self._open_rom_path(path)
 
     def _ensure_defs(self) -> EcuDefsRepository:
         if self._defs_repo is None:
@@ -67,26 +91,33 @@ class MainPresenter:
         path = self._window.ask_open_rom_path()
         if not path:
             return
+        self._open_rom_path(path)
+
+    def _open_rom_path(self, path: str) -> bool:
         try:
             repo = self._ensure_defs()
             self._parser = EcuParser.open_rom(path, self._defs_path, defs_repo=repo)
         except FileNotFoundError as exc:
             self._window.set_error(str(exc))
-            return
+            return False
         except LookupError as exc:
             self._window.set_error(str(exc))
-            return
+            return False
         except Exception as exc:  # noqa: BLE001 — показать в статусбаре
             self._window.set_error(f"Ошибка открытия ROM: {exc}")
-            return
+            return False
 
         self._current_map_id = None
         self._dirty = False
         self._checkpoints.clear()
         self._window.set_rom_path(path)
         self._window.editor_view.clear_table()
-        self._load_map_list()
         self._window.show_editor()
+        # После show_editor — иначе его «Editor» затирает число карт в статусе
+        self._load_map_list()
+        if self._settings is not None:
+            self._settings.set_last_rom_path(path)
+        return True
 
     def save_rom(self) -> None:
         if not self._parser.file_path:

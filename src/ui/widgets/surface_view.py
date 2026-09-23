@@ -73,14 +73,15 @@ def normalize_axis(axis: list[float], count: int) -> np.ndarray:
     return np.linspace(0.0, 1.0, count)
 
 
-def _axis_caption(name: str, values: list[float], labels: list[str] | None) -> str:
+def _axis_caption(name: str, title: str, values: list[float], labels: list[str] | None) -> tuple[str, str]:
+    """(название, диапазон) — рисуются двумя строками: название над точкой, диапазон под ней."""
     if labels:
         first, last = labels[0], labels[-1]
     elif values:
         first, last = f"{values[0]:.2f}", f"{values[-1]:.2f}"
     else:
-        return ""
-    return f"{name} {first} … {last}"
+        return "", ""
+    return title or name, f"{first} … {last}"
 
 
 class SurfaceView(QWidget):
@@ -133,7 +134,24 @@ class SurfaceView(QWidget):
         self._selected_stems.setDepthValue(10)
         self._selected_outline.setDepthValue(11)
         self._selected.setDepthValue(12)
-        self._labels = {key: gl.GLTextItem(color=LABEL_RGBA) for key in ("x", "y", "z_min", "z_max")}
+        # Подписи привязаны к точке центром (по умолчанию — левым нижним углом).
+        # GLTextItem однострочный, поэтому у осей две подписи в одной точке:
+        # название — над ней, диапазон — под ней.
+        center = Qt.AlignmentFlag.AlignCenter
+        above = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom
+        below = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+        label_alignment = {
+            "x_title": above,
+            "x_range": below,
+            "y_title": above,
+            "y_range": below,
+            "z_min": center,
+            "z_max": center,
+        }
+        self._labels = {
+            key: gl.GLTextItem(color=LABEL_RGBA, alignment=alignment)
+            for key, alignment in label_alignment.items()
+        }
         for item in self._items():
             self._view.addItem(item)
 
@@ -261,6 +279,8 @@ class SurfaceView(QWidget):
         *,
         x_labels: list[str] | None = None,
         y_labels: list[str] | None = None,
+        x_title: str = "",
+        y_title: str = "",
     ) -> None:
         """values[row][col]: row — ось Y, col — ось X (как в TableEditor).
 
@@ -299,7 +319,7 @@ class SurfaceView(QWidget):
             self._show_line(xs, ys, zs, colors)
 
         self._show_selection(xs, ys, zs, cells)
-        self._set_labels(x_axis, y_axis, x_labels, y_labels, z_min, z_max, rows, cols)
+        self._set_labels(x_axis, y_axis, x_labels, y_labels, x_title, y_title, z_min, z_max, rows, cols)
 
     def _show_surface(self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, colors: np.ndarray) -> None:
         # GLSurfacePlotItem ждёт z[ix, iy] — транспонируем из [row, col];
@@ -351,18 +371,25 @@ class SurfaceView(QWidget):
         y_axis: list[float],
         x_labels: list[str] | None,
         y_labels: list[str] | None,
+        x_title: str,
+        y_title: str,
         z_min: float,
         z_max: float,
         rows: int,
         cols: int,
     ) -> None:
         off = SIZE_XY * 0.06
-        x_caption = _axis_caption("X", x_axis, x_labels) if cols > 1 else ""
-        y_caption = _axis_caption("Y", y_axis, y_labels) if rows > 1 else ""
-        # Одна подпись на ось посередине ребра — в углах подписи X и Y слипаются
+        # Подписи осей — посередине рёбер и дальше от сетки, чтобы X и Y не слипались
+        axis_off = SIZE_XY * 0.14
+        x_name, x_range = _axis_caption("X", x_title, x_axis, x_labels) if cols > 1 else ("", "")
+        y_name, y_range = _axis_caption("Y", y_title, y_axis, y_labels) if rows > 1 else ("", "")
+        x_pos = (SIZE_XY / 2, -axis_off, 0.0)
+        y_pos = (-axis_off, SIZE_XY / 2, 0.0)
         placements: dict[str, tuple[tuple[float, float, float], str]] = {
-            "x": ((SIZE_XY / 2, -off, 0), x_caption),
-            "y": ((-off, SIZE_XY / 2, 0), y_caption),
+            "x_title": (x_pos, x_name),
+            "x_range": (x_pos, x_range),
+            "y_title": (y_pos, y_name),
+            "y_range": (y_pos, y_range),
             "z_min": ((SIZE_XY + off, SIZE_XY + off, 0), f"{z_min:.2f}"),
             "z_max": ((SIZE_XY + off, SIZE_XY + off, SIZE_Z), f"{z_max:.2f}"),
         }
