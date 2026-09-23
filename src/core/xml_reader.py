@@ -306,6 +306,29 @@ class EcuDefsRepository:
             base = self.resolve(base)
         return merge_rom_definitions(base, child)
 
+    def lineage(self, xmlid: str) -> list[RomId]:
+        """Цепочка romid от описания до корневой базы: [child, …, base]."""
+        chain: list[RomId] = []
+        seen: set[str] = set()
+        current: str | None = xmlid
+        while current and current not in seen:
+            seen.add(current)
+            definition = self._by_xmlid.get(current)
+            if definition is None:
+                break
+            chain.append(definition.romid)
+            current = definition.romid.base
+        return chain
+
+    def root_base(self, xmlid: str) -> str:
+        """Корневая база (16BITBASE, 32BITBASE, …) — последнее звено цепочки."""
+        chain = self.lineage(xmlid)
+        return chain[-1].xmlid if chain else ""
+
+    def memmodel(self, xmlid: str) -> str:
+        """Процессор ЭБУ: первое заданное memmodel вверх по цепочке."""
+        return next((rid.memmodel for rid in self.lineage(xmlid) if rid.memmodel), "")
+
     def identify(self, rom_bytes: bytes) -> RomDefinition | None:
         hits = self.match(rom_bytes)
         if not hits:

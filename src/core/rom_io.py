@@ -311,3 +311,92 @@ def write_axis_value(rom: bytearray, axis: AxisDef | None, index: int, value: fl
     _, size = _struct_format(axis.storagetype, axis.endian)
     address = axis.storageaddress + index * size
     return _write_physical(rom, address, axis.storagetype, axis.endian, axis.scaling, value)
+
+
+# --- Пакетная запись (перенос карт) --------------------------------------------
+
+
+def encode_values(
+    values: np.ndarray,
+    scaling: Scaling | None,
+    storagetype: str,
+    current_raw: np.ndarray,
+) -> np.ndarray:
+    """Физические значения → сырые, всегда в ближайшее представимое (без «сдвига»).
+
+    Нечисловые значения (inf/nan, например деление на 0 в scaling донора)
+    оставляют текущее сырое значение.
+    """
+    st = storagetype.lower()
+    v = np.asarray(values, dtype=float).ravel()
+    out = np.asarray(current_raw, dtype=float).ravel().copy()
+    ok = np.isfinite(v)
+    if not ok.any():
+        return out
+
+    if _uses_lookup(st):
+        expression = scaling.expression if scaling and scaling.expression else "x"
+        raws, phys = _raw_lookup(expression, st)
+        finite = np.isfinite(phys)
+        order = np.argsort(phys[finite], kind="stable")
+        sorted_phys = phys[finite][order]
+        sorted_raws = raws[finite][order]
+        target = v[ok]
+        idx = np.searchsorted(sorted_phys, target)
+        lo = np.clip(idx - 1, 0, len(sorted_phys) - 1)
+        hi = np.clip(idx, 0, len(sorted_phys) - 1)
+        pick = np.where(np.abs(sorted_phys[hi] - target) < np.abs(sorted_phys[lo] - target), hi, lo)
+        out[ok] = sorted_raws[pick]
+        return out
+
+    to_byte = scaling.to_byte if scaling and scaling.to_byte else "x"
+    raw = eval_expression_array(to_byte, v)
+    ok &= np.isfinite(raw)
+    if st in _INT_RANGES:
+        lo_i, hi_i = _INT_RANGES[st]
+        raw = np.clip(np.round(raw), lo_i, hi_i)
+    out[ok] = raw[ok]
+    return out
+
+
+def _write_block(
+    rom: bytearray,
+    address: int,
+    storagetype: str,
+    endian: str,
+    scaling: Scaling | None,
+    values: np.ndarray,
+) -> np.ndarray:
+    """Записать подряд лежащие значения; вернуть реально сохранённые физические."""
+    count = int(np.asarray(values).size)
+    _, size = _struct_format(storagetype, endian)
+    current = np.array(read_raw_values(rom, address, count, storagetype, endian))
+    raws = encode_values(values, scaling, storagetype, current)
+    for i in np.flatnonzero(raws != current):
+        _write_raw(rom, address + int(i) * size, storagetype, endian, float(raws[i]))
+    stored = read_raw_values(rom, address, count, storagetype, endian)
+    return np.array(apply_scaling(stored, scaling))
+
+
+def write_table_values(rom: bytearray, table: TableDef, values: np.ndarray) -> np.ndarray:
+    """Записать всю матрицу таблицы [rows, cols]; вернуть сохранённую матрицу."""
+    if table.storageaddress is None:
+        raise ValueError(f"Table '{table.name}' has no storageaddress")
+    rows, cols = table_dimensions(table)
+    grid = np.asarray(values, dtype=float)
+    if grid.shape != (rows, cols):
+        raise ValueError(f"Shape {grid.shape} != table {rows}×{cols}")
+    stored = _write_block(rom, table.storageaddress, table.storagetype, table.endian, table.scaling, grid)
+    return stored.reshape(rows, cols)
+
+
+def is_writable_axis(axis: AxisDef | None) -> bool:
+    return axis is not None and not is_static_axis(axis) and axis.storageaddress is not None
+
+
+def write_axis_values(rom: bytearray, axis: AxisDef | None, values: np.ndarray) -> np.ndarray:
+    """Записать все точки оси; вернуть сохранённые значения."""
+    if axis is None or not is_writable_axis(axis):
+        raise ValueError("Ось не хранится в ROM и не редактируется")
+    assert axis.storageaddress is not None
+    return _write_block(rom, axis.storageaddress, axis.storagetype, axis.endian, axis.scaling, values)

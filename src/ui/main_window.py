@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
@@ -15,6 +16,8 @@ from PyQt6.QtWidgets import (
 from src.ui.editor_view import EditorView
 from src.ui.key_bindings import KeyBindings
 from src.ui.settings_dialog import SettingsDialog
+from src.core.transfer import TransferPlan
+from src.ui.transfer_dialog import TransferDialog, TransferReportDialog
 from src.ui.widgets.status_line import StatusLine
 
 
@@ -52,6 +55,7 @@ class MainWindow(QMainWindow):
         self.on_save_rom: Callable[[], None] | None = None
         self.on_show_editor: Callable[[], None] | None = None
         self.on_show_tools: Callable[[], None] | None = None
+        self.on_transfer_maps: Callable[[], None] | None = None
 
     def _build_menu(self) -> None:
         menu = self.menuBar()
@@ -97,6 +101,12 @@ class MainWindow(QMainWindow):
         tools_action.triggered.connect(self._emit_show_tools)
         view_menu.addAction(tools_action)
 
+        maps_menu = menu.addMenu("&Maps")
+        assert maps_menu is not None
+        transfer_action = QAction("Transfer Maps from ROM…", self)
+        transfer_action.triggered.connect(self._emit_transfer_maps)
+        maps_menu.addAction(transfer_action)
+
     def show_settings(self) -> None:
         SettingsDialog(self.key_bindings, self).exec()
 
@@ -132,12 +142,34 @@ class MainWindow(QMainWindow):
         )
         return path or None
 
+    def ask_donor_rom_path(self) -> str | None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Донорская прошивка (B)",
+            "",
+            "ROM files (*.bin *.hex);;All files (*)",
+        )
+        return path or None
+
+    def ask_transfer_selection(self, plan: TransferPlan) -> list[str] | None:
+        dialog = TransferDialog(plan, self)
+        if dialog.exec() != TransferDialog.DialogCode.Accepted:
+            return None
+        return dialog.selected_names()
+
+    def show_transfer_report(self, markdown: str, path: Path | None) -> None:
+        TransferReportDialog(markdown, path, self).exec()
+
     def show_info(self, title: str, text: str) -> None:
         QMessageBox.information(self, title, text)
 
     def _emit_open(self) -> None:
         if self.on_open_rom:
             self.on_open_rom()
+
+    def _emit_transfer_maps(self) -> None:
+        if self.on_transfer_maps:
+            self.on_transfer_maps()
 
     def _emit_save(self) -> None:
         if self.on_save_rom:

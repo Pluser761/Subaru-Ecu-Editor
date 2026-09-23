@@ -5,6 +5,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt
 
 from src.core.parser import EcuParser
+from src.core.transfer import apply_transfer, check_compatibility, plan_transfer, render_report, save_report
 from src.core.xml_reader import EcuDefsRepository
 from src.ui.app_settings import AppSettings
 from src.ui.main_window import MainWindow
@@ -36,6 +37,7 @@ class MainPresenter:
 
         window.on_open_rom = self.open_rom
         window.on_save_rom = self.save_rom
+        window.on_transfer_maps = self.transfer_maps
         window.on_show_editor = window.show_editor
         window.on_show_tools = window.show_tools
 
@@ -118,6 +120,59 @@ class MainPresenter:
         if self._settings is not None:
             self._settings.set_last_rom_path(path)
         return True
+
+    def transfer_maps(self) -> None:
+        """Перенос выбранных карт из донорской прошивки B в открытую A."""
+        if not self._parser.file_path or self._parser.definition is None:
+            self._window.show_info("Перенос карт", "Сначала откройте целевую прошивку (A).")
+            return
+        path = self._window.ask_donor_rom_path()
+        if not path:
+            return
+        try:
+            donor = EcuParser.open_rom(path, self._defs_path, defs_repo=self._ensure_defs())
+        except Exception as exc:  # noqa: BLE001
+            self._window.set_error(f"Донор (B): {exc}")
+            return
+        reason = check_compatibility(donor, self._parser)
+        if reason:
+            self._window.set_error(reason)
+            self._window.show_info("Перенос карт", reason)
+            return
+
+        plan = plan_transfer(donor, self._parser)
+        names = self._window.ask_transfer_selection(plan)
+        if not names:
+            return
+
+        editor = self._window.editor_view
+        if self._current_map_id is not None:
+            self._checkpoints[self._current_map_id] = editor.checkpoint_values()
+        try:
+            report = apply_transfer(donor, self._parser, names, plan)
+        except Exception as exc:  # noqa: BLE001
+            self._window.set_error(f"Перенос не выполнен: {exc}")
+            return
+
+        # Рамки checkpoint показывают изменения относительно состояния до переноса
+        for name, values in report.before_values.items():
+            self._checkpoints.setdefault(name, values)
+        self._dirty = self._dirty or bool(report.before_values)
+        if self._current_map_id is not None:
+            self.select_map(self._current_map_id)
+
+        markdown = render_report(report)
+        report_file: Path | None = None
+        try:
+            saved = save_report(report)
+        except OSError as exc:
+            self._window.set_error(f"Отчёт не сохранён: {exc}")
+        else:
+            report_file = saved
+            self._window.set_status(
+                f"Перенесено из {report.source_id}: {len(report.before_values)} таблиц · отчёт {saved.name}"
+            )
+        self._window.show_transfer_report(markdown, report_file)
 
     def save_rom(self) -> None:
         if not self._parser.file_path:
