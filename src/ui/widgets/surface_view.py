@@ -6,8 +6,8 @@ import numpy as np
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 from OpenGL import GL
-from PyQt6.QtCore import QEvent, QObject, QSize
-from PyQt6.QtGui import QResizeEvent
+from PyQt6.QtCore import QEvent, QObject, QPointF, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QMouseEvent, QResizeEvent
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 # Размер сцены: оси X/Y нормируются в [0, SIZE_XY], значения — в [0, SIZE_Z]
@@ -24,6 +24,13 @@ FLOOR_GRID_WIDTH = 2.0
 LABEL_RGBA = (50, 50, 50, 255)
 SELECTED_RGBA = (1.0, 0.45, 0.0, 1.0)
 SELECTED_MARKER_SIZE = 14
+# Клик считается выбором точки, если мышь сдвинулась меньше порога (иначе — вращение)
+CLICK_MAX_MOVE_PX = 4
+# Максимальное расстояние от курсора до узла на экране, чтобы узел выбрался
+PICK_RADIUS_PX = 16
+# Узлы в пределах этого зазора считаются перекрывающимися на экране
+PICK_OVERLAP_PX = 3
+
 # Ячейки с inf/nan (деление на ноль в scaling) — серые и лежат на уровне минимума
 NON_FINITE_RGBA = (0.6, 0.6, 0.6, 1.0)
 
@@ -73,8 +80,14 @@ def _axis_caption(name: str, values: list[float], labels: list[str] | None) -> s
 class SurfaceView(QWidget):
     """3D-вид калибровочной таблицы: меш с цветом по значению и подсветкой выделения."""
 
+    # row, col, additive (Ctrl/Cmd+клик — добавить к выделению)
+    point_clicked = pyqtSignal(int, int, bool)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        # Координаты узлов в сцене [row, col, xyz] — для выбора точки кликом
+        self._node_pos: np.ndarray | None = None
+        self._press_pos: QPointF | None = None
 
         self._view = gl.GLViewWidget()
         self._view.setBackgroundColor(BACKGROUND)
@@ -111,7 +124,10 @@ class SurfaceView(QWidget):
 
         reset_btn = QPushButton("Сбросить вид")
         reset_btn.clicked.connect(self.reset_camera)
-        self._hint = QLabel("ЛКМ — вращение, колесо — масштаб, СКМ — сдвиг")
+        self._hint = QLabel(
+            "Клик — выбрать точку, Ctrl/⌘+клик — добавить; "
+            "перетаскивание — вращение, колесо — масштаб, СКМ — сдвиг"
+        )
         self._hint.setStyleSheet("color: #888;")
 
         toolbar = QHBoxLayout()
@@ -157,9 +173,61 @@ class SurfaceView(QWidget):
                 self._view.opts["distance"] *= ratio
             else:
                 self._view.opts["distance"] = self._fit_distance(event.size())
+        elif obj == self._view and isinstance(event, QMouseEvent):
+            self._handle_mouse(event)
+        # Не поглощаем событие — вращение/масштаб GLViewWidget работают как раньше
         return super().eventFilter(obj, event)
 
+    def _handle_mouse(self, event: QMouseEvent) -> None:
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if event.type() == QEvent.Type.MouseButtonPress:
+            self._press_pos = event.position()
+            return
+        if event.type() != QEvent.Type.MouseButtonRelease or self._press_pos is None:
+            return
+        moved = (event.position() - self._press_pos).manhattanLength()
+        self._press_pos = None
+        if moved > CLICK_MAX_MOVE_PX:
+            return
+        hit = self.pick_node(event.position())
+        if hit is None:
+            return
+        mods = event.modifiers()
+        additive = bool(mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier))
+        self.point_clicked.emit(hit[0], hit[1], additive)
+
+    def pick_node(self, pos: QPointF) -> tuple[int, int] | None:
+        """Ближайший к курсору узел (row, col) в пределах PICK_RADIUS_PX или None."""
+        if self._node_pos is None:
+            return None
+        viewport = self._view.getViewport()
+        _, _, w, h = viewport
+        mvp = self._view.projectionMatrix(viewport, viewport) * self._view.viewMatrix()
+        # QMatrix4x4.data() — column-major
+        m = np.array(mvp.data(), dtype=float).reshape(4, 4).T
+
+        rows, cols, _ = self._node_pos.shape
+        pts = np.concatenate([self._node_pos.reshape(-1, 3), np.ones((rows * cols, 1))], axis=1)
+        clip = pts @ m.T
+        in_front = clip[:, 3] > 1e-9
+        wdiv = np.where(in_front, clip[:, 3], 1.0)
+        sx = (clip[:, 0] / wdiv + 1.0) * 0.5 * w
+        sy = (1.0 - clip[:, 1] / wdiv) * 0.5 * h
+        dist = np.hypot(sx - pos.x(), sy - pos.y())
+        dist[~in_front] = np.inf
+
+        nearest = float(dist.min())
+        if nearest > PICK_RADIUS_PX:
+            return None
+        # Ближайший к курсору; если узлы на экране почти совпали (передняя и задняя
+        # сторона меша) — берём тот, что ближе к камере
+        candidates = np.flatnonzero(dist <= nearest + PICK_OVERLAP_PX)
+        best = candidates[np.argmin(clip[candidates, 3])]
+        return int(best // cols), int(best % cols)
+
     def clear(self) -> None:
+        self._node_pos = None
         for item in self._items():
             item.setVisible(False)
 
@@ -196,6 +264,9 @@ class SurfaceView(QWidget):
         zn = (z - z_min) / span if span > 0 else np.full_like(z, 0.5)
         zn[~finite] = 0.0
         zs = zn * SIZE_Z
+
+        grid_x, grid_y = np.meshgrid(xs, ys)
+        self._node_pos = np.stack([grid_x, grid_y, zs], axis=-1)
 
         colors = _CMAP.map(zn.ravel(), mode="float").reshape(rows, cols, 4)
         colors[~finite] = NON_FINITE_RGBA

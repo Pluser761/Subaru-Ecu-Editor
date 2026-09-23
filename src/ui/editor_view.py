@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QSplitter,
     QFrame,
+    QTableWidgetSelectionRange,
 )
 
 from src.core.models import CalibrationTable, MapInfo
@@ -48,6 +49,7 @@ class EditorView(QWidget):
         self._table.x_axis_changed.connect(self._schedule_surface)
         self._table.y_axis_changed.connect(self._schedule_surface)
         self._table.itemSelectionChanged.connect(self._schedule_surface)
+        self._surface.point_clicked.connect(self._on_surface_point_clicked)
 
         right = QVBoxLayout()
         right.setContentsMargins(8, 0, 0, 0)
@@ -132,3 +134,12 @@ class EditorView(QWidget):
             x_labels=self._table.axis_labels(Qt.Orientation.Horizontal),
             y_labels=self._table.axis_labels(Qt.Orientation.Vertical),
         )
+
+    def _on_surface_point_clicked(self, row: int, col: int, additive: bool) -> None:
+        if additive:
+            item = self._table.item(row, col)
+            selected = item is not None and item.isSelected()
+            self._table.setRangeSelected(QTableWidgetSelectionRange(row, col, row, col), not selected)
+        else:
+            self._table.setCurrentCell(row, col)
+        self._table.scrollToItem(self._table.item(row, col))
