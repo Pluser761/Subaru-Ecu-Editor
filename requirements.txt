@@ -1,0 +1,6 @@
+PyQt6
+pydantic
+pyqtgraph
+PyOpenGL
+numpy
+mypy
