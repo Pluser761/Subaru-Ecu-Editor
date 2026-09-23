@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 
 from PyQt6.QtCore import Qt, QModelIndex, QRect, QEvent, pyqtSignal
-from PyQt6.QtGui import QValidator, QMouseEvent, QKeySequence
+from PyQt6.QtGui import QColor, QKeySequence, QMouseEvent, QPainter, QPalette, QPen, QValidator
 from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
@@ -31,6 +31,17 @@ from src.core.models import CalibrationTable
 
 STATIC_AXIS_MESSAGE = "Статическая ось задана в definition и не редактируется"
 NON_NUMERIC_CLIPBOARD_MESSAGE = "Буфер обмена содержит нечисловые данные"
+
+
+# Рамка ячейки относительно checkpoint: выросло — красная, уменьшилось — синяя
+CHECKPOINT_UP_COLOR = QColor("#d93025")
+CHECKPOINT_DOWN_COLOR = QColor("#1a66d9")
+CHECKPOINT_BORDER_WIDTH = 2
+# Значения сравниваются с точностью отображения (2 знака)
+CHECKPOINT_EPSILON = 0.005
+# Выделение нейтральным цветом: системный синий сливается с синей рамкой checkpoint
+SELECTION_BG_COLOR = QColor("#d5dbe4")
+SELECTION_TEXT_COLOR = QColor("#000000")
 
 
 def format_cell_value(value: float) -> str:
@@ -64,7 +75,31 @@ class DecimalInputValidator(QValidator):
 
 
 class DecimalCellDelegate(QStyledItemDelegate):
-    """Редактор ячейки: фильтр ввода + нормализация к xx.xx."""
+    """Редактор ячейки: фильтр ввода + нормализация к xx.xx; рамка изменений от checkpoint."""
+
+    def paint(
+        self,
+        painter: QPainter | None,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> None:
+        super().paint(painter, option, index)
+        table = self.parent()
+        if painter is None or not isinstance(table, TableEditor):
+            return
+        diff = table.checkpoint_diff(index.row(), index.column())
+        if diff == 0:
+            return
+        color = CHECKPOINT_UP_COLOR if diff > 0 else CHECKPOINT_DOWN_COLOR
+        painter.save()
+        pen = QPen(color, CHECKPOINT_BORDER_WIDTH)
+        pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # Рамка целиком внутри ячейки, чтобы соседние не перекрывали друг друга
+        half = CHECKPOINT_BORDER_WIDTH // 2
+        painter.drawRect(option.rect.adjusted(half, half, -half - 1, -half - 1))
+        painter.restore()
 
     def createEditor(
         self,
@@ -328,6 +363,11 @@ class TableEditor(QTableWidget):
         super().__init__(parent)
         self.setAlternatingRowColors(True)
         self.setItemDelegate(DecimalCellDelegate(self))
+        palette = self.palette()
+        for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+            palette.setColor(group, QPalette.ColorRole.Highlight, SELECTION_BG_COLOR)
+            palette.setColor(group, QPalette.ColorRole.HighlightedText, SELECTION_TEXT_COLOR)
+        self.setPalette(palette)
 
         h_header = EditableHeaderView(Qt.Orientation.Horizontal, self)
         v_header = EditableHeaderView(Qt.Orientation.Vertical, self)
@@ -350,6 +390,8 @@ class TableEditor(QTableWidget):
         self._y_labels: list[str] | None = None
         self._x_static: list[float] = []
         self._y_static: list[float] = []
+        # Точка отсчёта для подсветки изменений (значения на момент Set checkpoint)
+        self._checkpoint: list[list[float]] = []
 
     def event(self, event) -> bool:  # type: ignore[no-untyped-def]
         # Перехватываем до стандартного QAbstractItemView paste
@@ -516,6 +558,7 @@ class TableEditor(QTableWidget):
             self.clear()
             self._x_labels = self._y_labels = None
             self._x_static, self._y_static = [], []
+            self._checkpoint = []
             if table is None:
                 self.setRowCount(0)
                 self.setColumnCount(0)
@@ -554,6 +597,58 @@ class TableEditor(QTableWidget):
                     self.setItem(r, c, item)
         finally:
             self._updating = False
+        # Только что загруженная таблица — сама себе checkpoint
+        self.set_checkpoint()
+
+    def set_checkpoint(self) -> None:
+        """Запомнить текущие значения как точку отсчёта; рамки изменений сбрасываются."""
+        self.set_checkpoint_values(self.get_values())
+
+    def checkpoint_values(self) -> list[list[float]]:
+        return [list(row) for row in self._checkpoint]
+
+    def set_checkpoint_values(self, values: list[list[float]]) -> None:
+        """Восстановить сохранённый checkpoint (размер должен совпадать с таблицей)."""
+        if len(values) != self.rowCount() or any(len(r) != self.columnCount() for r in values):
+            values = self.get_values()
+        self._checkpoint = [list(row) for row in values]
+        viewport = self.viewport()
+        if viewport is not None:
+            viewport.update()
+
+    def set_cell_display(self, row: int, col: int, value: float) -> None:
+        """Показать значение без сигнала cell_value_changed (например, после квантования)."""
+        self._updating = True
+        try:
+            self._set_cell_value(row, col, value)
+        finally:
+            self._updating = False
+
+    def set_axis_display(self, orientation: Qt.Orientation, index: int, value: float) -> None:
+        """Показать значение оси в заголовке без сигнала изменения."""
+        model = self.model()
+        if model is not None:
+            model.setHeaderData(index, orientation, format_cell_value(value), Qt.ItemDataRole.EditRole)
+
+    def checkpoint_diff(self, row: int, col: int) -> int:
+        """+1 — значение выросло относительно checkpoint, -1 — уменьшилось, 0 — без изменений."""
+        if row >= len(self._checkpoint) or col >= len(self._checkpoint[row]):
+            return 0
+        item = self.item(row, col)
+        if item is None:
+            return 0
+        try:
+            value = parse_cell_value(item.text())
+        except ValueError:
+            return 0
+        base = self._checkpoint[row][col]
+        if value == base:  # в т.ч. inf == inf
+            return 0
+        if not (math.isfinite(value) and math.isfinite(base)):
+            return 1 if value > base else -1
+        if abs(value - base) < CHECKPOINT_EPSILON:
+            return 0
+        return 1 if value > base else -1
 
     def get_values(self) -> list[list[float]]:
         values: list[list[float]] = []

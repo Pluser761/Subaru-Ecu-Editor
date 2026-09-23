@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PyQt6.QtCore import Qt
+
 from src.core.parser import EcuParser
 from src.core.xml_reader import EcuDefsRepository
 from src.ui.main_window import MainWindow
@@ -25,6 +27,8 @@ class MainPresenter:
         self._defs_repo: EcuDefsRepository | None = None
         self._current_map_id: str | None = None
         self._dirty = False
+        # Checkpoint каждой карты живёт, пока открыт ROM: переключение карт его не сбрасывает
+        self._checkpoints: dict[str, list[list[float]]] = {}
 
         window.on_open_rom = self.open_rom
         window.on_save_rom = self.save_rom
@@ -78,6 +82,7 @@ class MainPresenter:
 
         self._current_map_id = None
         self._dirty = False
+        self._checkpoints.clear()
         self._window.set_rom_path(path)
         self._window.editor_view.clear_table()
         self._load_map_list()
@@ -91,29 +96,55 @@ class MainPresenter:
         self._window.show_info("Save", "Запись ROM пока не реализована.")
 
     def select_map(self, map_id: str) -> None:
+        editor = self._window.editor_view
+        if self._current_map_id is not None:
+            self._checkpoints[self._current_map_id] = editor.checkpoint_values()
         try:
             table = self._parser.load_table(map_id)
         except Exception as exc:  # noqa: BLE001
             self._window.set_error(f"Не удалось загрузить карту: {exc}")
             return
         self._current_map_id = map_id
-        self._window.editor_view.show_table(table)
+        editor.show_table(table, self._checkpoints.get(map_id))
         self._window.set_status(f"Карта: {table.name} ({table.rows}×{table.cols})")
 
     def on_cell_changed(self, row: int, col: int, value: float) -> None:
+        map_id = self._current_map_id
+        if map_id is None:
+            return
+        editor = self._window.editor_view
+        try:
+            stored = self._parser.write_cell(map_id, row, col, value)
+        except Exception as exc:  # noqa: BLE001 — показать в статусбаре и откатить ячейку
+            self._window.set_error(f"Не удалось записать ({row}, {col}): {exc}")
+            editor.update_cell(row, col, self._parser.read_cell(map_id, row, col))
+            return
+        # В ячейке — то, что реально легло в ROM (квантование типа, границы диапазона)
+        editor.update_cell(row, col, stored)
         self._dirty = True
-        name = self._current_map_id or "?"
-        self._window.set_status(f"Изменено [{name}] ({row}, {col}) = {value:.2f}")
+        note = "" if round(stored, 2) == round(value, 2) else f" (введено {value:.2f})"
+        self._window.set_status(f"Изменено [{map_id}] ({row}, {col}) = {stored:.2f}{note}")
 
     def on_x_axis_changed(self, col: int, value: float) -> None:
-        self._dirty = True
-        name = self._current_map_id or "?"
-        self._window.set_status(f"Ось X [{name}] col {col} = {value:.2f}")
+        self._on_axis_changed("x", Qt.Orientation.Horizontal, col, value)
 
     def on_y_axis_changed(self, row: int, value: float) -> None:
+        self._on_axis_changed("y", Qt.Orientation.Vertical, row, value)
+
+    def _on_axis_changed(self, axis: str, orientation: Qt.Orientation, index: int, value: float) -> None:
+        map_id = self._current_map_id
+        if map_id is None:
+            return
+        editor = self._window.editor_view
+        try:
+            stored = self._parser.write_axis(map_id, axis, index, value)
+        except Exception as exc:  # noqa: BLE001
+            self._window.set_error(f"Не удалось записать ось {axis.upper()}[{index}]: {exc}")
+            editor.update_axis(orientation, index, self._parser.read_axis(map_id, axis, index))
+            return
+        editor.update_axis(orientation, index, stored)
         self._dirty = True
-        name = self._current_map_id or "?"
-        self._window.set_status(f"Ось Y [{name}] row {row} = {value:.2f}")
+        self._window.set_status(f"Ось {axis.upper()} [{map_id}] {index} = {stored:.2f}")
 
     def on_matrix_copied(self, rows: int, cols: int) -> None:
         self._window.set_status(f"Скопировано {rows}×{cols}")

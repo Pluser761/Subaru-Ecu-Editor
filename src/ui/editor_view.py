@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QSplitter,
     QFrame,
+    QPushButton,
     QTableWidgetSelectionRange,
 )
 
@@ -64,7 +65,16 @@ class EditorView(QWidget):
         right.setContentsMargins(8, 0, 0, 0)
         right.addWidget(self._title)
         right.addWidget(self._meta)
-        right.addWidget(self._steps)
+        checkpoint_btn = QPushButton("Set checkpoint")
+        checkpoint_btn.setToolTip(
+            "Запомнить текущие значения как точку отсчёта. Изменённые после этого ячейки "
+            "обводятся: красным — больше, синим — меньше"
+        )
+        checkpoint_btn.clicked.connect(self._set_checkpoint)
+        edit_row = QHBoxLayout()
+        edit_row.addWidget(self._steps, stretch=1)
+        edit_row.addWidget(checkpoint_btn)
+        right.addLayout(edit_row)
 
         table_frame = QFrame()
         table_frame.setFrameShape(QFrame.Shape.StyledPanel)
@@ -111,11 +121,25 @@ class EditorView(QWidget):
             leaf.setData(0, int(Qt.ItemDataRole.UserRole), info.id)
             categories[info.category].addChild(leaf)
 
-    def show_table(self, table: CalibrationTable) -> None:
+    def update_cell(self, row: int, col: int, value: float) -> None:
+        """Показать значение, реально сохранённое в ROM (без повторной записи)."""
+        self._table.set_cell_display(row, col, value)
+        self._schedule_surface()
+
+    def update_axis(self, orientation: Qt.Orientation, index: int, value: float) -> None:
+        self._table.set_axis_display(orientation, index, value)
+        self._schedule_surface()
+
+    def checkpoint_values(self) -> list[list[float]]:
+        return self._table.checkpoint_values()
+
+    def show_table(self, table: CalibrationTable, checkpoint: list[list[float]] | None = None) -> None:
         self._title.setText(table.name)
         unit = f" · {table.unit}" if table.unit else ""
         self._meta.setText(f"{table.rows} × {table.cols}{unit}")
         self._table.set_table(table)
+        if checkpoint is not None:
+            self._table.set_checkpoint_values(checkpoint)
         self._steps.set_increments(table.fine_increment, table.coarse_increment)
         self._refresh_surface()
 
@@ -161,6 +185,12 @@ class EditorView(QWidget):
                     self._table.operation_info.emit(f"{delta:+.2f} → ячеек: {count}")
                 return True
         return super().eventFilter(obj, event)
+
+    def _set_checkpoint(self) -> None:
+        if self._table.rowCount() == 0:
+            return
+        self._table.set_checkpoint()
+        self._table.operation_info.emit("Checkpoint установлен: подсветка изменений сброшена")
 
     def _on_surface_point_clicked(self, row: int, col: int, additive: bool) -> None:
         if additive:

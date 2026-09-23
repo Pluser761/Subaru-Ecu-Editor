@@ -22,8 +22,14 @@ MESH_LINE_WIDTH = 2.0
 FLOOR_GRID_RGBA = (0, 0, 0, 90)
 FLOOR_GRID_WIDTH = 2.0
 LABEL_RGBA = (50, 50, 50, 255)
-SELECTED_RGBA = (1.0, 0.45, 0.0, 1.0)
-SELECTED_MARKER_SIZE = 14
+# Выделение: белая точка с тёмной обводкой — читается на любом цвете шкалы
+# и не перекрашивает сам меш
+SELECTED_FILL_RGBA = (1.0, 1.0, 1.0, 1.0)
+SELECTED_OUTLINE_RGBA = (0.1, 0.1, 0.1, 0.9)
+SELECTED_FILL_SIZE = 7
+SELECTED_OUTLINE_SIZE = 11
+SELECTED_STEM_RGBA = (0.1, 0.1, 0.1, 0.45)
+SELECTED_STEM_WIDTH = 1.5
 # Клик считается выбором точки, если мышь сдвинулась меньше порога (иначе — вращение)
 CLICK_MAX_MOVE_PX = 4
 # Максимальное расстояние от курсора до узла на экране, чтобы узел выбрался
@@ -111,15 +117,22 @@ class SurfaceView(QWidget):
         )
         self._line = gl.GLLinePlotItem(width=3, antialias=True)
         self._points = gl.GLScatterPlotItem(size=8, glOptions="opaque")
-        # Выделение: маркер в узле + вертикальная «ножка» до пола
+        # Выделение: маркер в узле (обводка + заливка) и тонкая «ножка» до пола
         self._selected_stems = gl.GLLinePlotItem(
-            mode="lines", width=2, color=SELECTED_RGBA, glOptions=_OVERLAY_GL_OPTIONS
+            mode="lines",
+            width=SELECTED_STEM_WIDTH,
+            color=SELECTED_STEM_RGBA,
+            glOptions=_OVERLAY_GL_OPTIONS,
+        )
+        self._selected_outline = gl.GLScatterPlotItem(
+            size=SELECTED_OUTLINE_SIZE, color=SELECTED_OUTLINE_RGBA, glOptions=_OVERLAY_GL_OPTIONS
         )
         self._selected = gl.GLScatterPlotItem(
-            size=SELECTED_MARKER_SIZE, color=SELECTED_RGBA, glOptions=_OVERLAY_GL_OPTIONS
+            size=SELECTED_FILL_SIZE, color=SELECTED_FILL_RGBA, glOptions=_OVERLAY_GL_OPTIONS
         )
         self._selected_stems.setDepthValue(10)
-        self._selected.setDepthValue(11)
+        self._selected_outline.setDepthValue(11)
+        self._selected.setDepthValue(12)
         self._labels = {key: gl.GLTextItem(color=LABEL_RGBA) for key in ("x", "y", "z_min", "z_max")}
         for item in self._items():
             self._view.addItem(item)
@@ -157,6 +170,7 @@ class SurfaceView(QWidget):
             self._line,
             self._points,
             self._selected_stems,
+            self._selected_outline,
             self._selected,
             *self._labels.values(),
         )
@@ -278,9 +292,6 @@ class SurfaceView(QWidget):
         colors = _CMAP.map(zn.ravel(), mode="float").reshape(rows, cols, 4)
         colors[~finite] = NON_FINITE_RGBA
         cells = [(r, c) for r, c in (selected or ()) if r < rows and c < cols]
-        # Узлы выделенных ячеек подкрашиваем и на самом меше
-        for r, c in cells:
-            colors[r, c] = SELECTED_RGBA
 
         if rows >= 2 and cols >= 2:
             self._show_surface(xs, ys, zs, colors)
@@ -317,9 +328,10 @@ class SurfaceView(QWidget):
     def _show_selection(
         self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, cells: list[tuple[int, int]]
     ) -> None:
+        markers = (self._selected_stems, self._selected_outline, self._selected)
         if not cells:
-            self._selected.setVisible(False)
-            self._selected_stems.setVisible(False)
+            for item in markers:
+                item.setVisible(False)
             return
         pos = np.array([(xs[c], ys[r], zs[r, c]) for r, c in cells])
         floor = pos.copy()
@@ -327,10 +339,11 @@ class SurfaceView(QWidget):
         stems = np.empty((len(pos) * 2, 3))
         stems[0::2] = floor
         stems[1::2] = pos
-        self._selected.setData(pos=pos, color=SELECTED_RGBA)
+        self._selected_outline.setData(pos=pos, color=SELECTED_OUTLINE_RGBA)
+        self._selected.setData(pos=pos, color=SELECTED_FILL_RGBA)
         self._selected_stems.setData(pos=stems)
-        self._selected.setVisible(True)
-        self._selected_stems.setVisible(True)
+        for item in markers:
+            item.setVisible(True)
 
     def _set_labels(
         self,

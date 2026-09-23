@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import math
 import struct
+from functools import lru_cache
+
+import numpy as np
 
 from src.core.models import AxisDef, Scaling, TableDef
-from src.core.scaling import eval_expression
+from src.core.scaling import eval_expression, eval_expression_array
 
 
 _TYPE_FMT = {
@@ -33,19 +37,23 @@ def storage_size(storagetype: str, endian: str = "big") -> int:
     return _TYPE_FMT[key][1]
 
 
+def _struct_format(storagetype: str, endian: str) -> tuple[str, int]:
+    st = storagetype.lower()
+    fmt, size = _TYPE_FMT.get((st, endian.lower()), ("B", 1))
+    # uint8/int8 ignore endian in struct module single-byte
+    if size == 1:
+        fmt = "b" if st == "int8" else "B"
+    return fmt, size
+
+
 def read_raw_values(
-    rom: bytes,
+    rom: bytes | bytearray,
     address: int,
     count: int,
     storagetype: str,
     endian: str,
 ) -> list[float]:
-    st = storagetype.lower()
-    en = endian.lower()
-    fmt, size = _TYPE_FMT.get((st, en), ("B", 1))
-    # uint8/int8 ignore endian in struct module single-byte
-    if size == 1:
-        fmt = "B" if st.startswith("u") else "b"
+    fmt, size = _struct_format(storagetype, endian)
 
     out: list[float] = []
     for i in range(count):
@@ -106,7 +114,7 @@ def read_axis_labels(axis: AxisDef | None, expected_len: int) -> list[str] | Non
     return labels
 
 
-def read_axis_values(rom: bytes, axis: AxisDef | None, expected_len: int) -> list[float]:
+def read_axis_values(rom: bytes | bytearray, axis: AxisDef | None, expected_len: int) -> list[float]:
     if axis is None:
         return [float(i) for i in range(expected_len)]
 
@@ -139,7 +147,7 @@ def read_axis_values(rom: bytes, axis: AxisDef | None, expected_len: int) -> lis
     return scaled + [float(i) for i in range(len(scaled), expected_len)]
 
 
-def read_table_matrix(rom: bytes, table: TableDef) -> list[list[float]]:
+def read_table_matrix(rom: bytes | bytearray, table: TableDef) -> list[list[float]]:
     if table.storageaddress is None:
         raise ValueError(f"Table '{table.name}' has no storageaddress")
 
@@ -164,3 +172,131 @@ def read_table_matrix(rom: bytes, table: TableDef) -> list[list[float]]:
             idx += 1
         matrix.append(row)
     return matrix
+
+
+# --- Запись -----------------------------------------------------------------
+
+# Диапазоны сырых целых значений по storagetype
+_INT_RANGES: dict[str, tuple[int, int]] = {
+    "uint8": (0, 0xFF),
+    "int8": (-0x80, 0x7F),
+    "uint16": (0, 0xFFFF),
+    "int16": (-0x8000, 0x7FFF),
+    "uint32": (0, 0xFFFF_FFFF),
+}
+# Для типов не шире 16 бит кодируем перебором всех сырых значений (≤ 65536)
+_LOOKUP_MAX_BITS = 16
+# Совпадение с точностью отображения: «то же значение» — ничего не меняем
+_DISPLAY_DECIMALS = 2
+
+
+@lru_cache(maxsize=256)
+def _raw_lookup(expression: str, storagetype: str) -> tuple[np.ndarray, np.ndarray]:
+    """Все сырые значения типа и их физические значения по expression."""
+    lo, hi = _INT_RANGES[storagetype]
+    raws = np.arange(lo, hi + 1, dtype=np.int64)
+    phys = eval_expression_array(expression, raws)
+    return raws, phys
+
+
+def _uses_lookup(storagetype: str) -> bool:
+    st = storagetype.lower()
+    if st not in _INT_RANGES:
+        return False
+    lo, hi = _INT_RANGES[st]
+    return (hi - lo + 1) <= (1 << _LOOKUP_MAX_BITS)
+
+
+def encode_value(
+    value: float,
+    scaling: Scaling | None,
+    storagetype: str,
+    current_raw: float,
+) -> float:
+    """Физическое значение → сырое для записи в ROM.
+
+    Целые до 16 бит: берём сырое значение, чей пересчёт ближе всего к value.
+    Если ближайшим оказалось текущее, а value отличается от текущего на экране,
+    сдвигаемся на соседнее представимое значение в нужную сторону — иначе мелкий
+    шаг на грубой шкале (например, AFR в uint8) «застревал» бы на месте.
+    float / uint32: обратная формула to_byte из definition.
+    """
+    st = storagetype.lower()
+    expression = scaling.expression if scaling and scaling.expression else "x"
+    to_byte = scaling.to_byte if scaling and scaling.to_byte else "x"
+
+    if _uses_lookup(st):
+        raws, phys = _raw_lookup(expression, st)
+        lo = _INT_RANGES[st][0]
+        current = int(current_raw)
+        current_phys = float(phys[current - lo])
+        if round(value, _DISPLAY_DECIMALS) == round(current_phys, _DISPLAY_DECIMALS):
+            return float(current)
+        finite = np.isfinite(phys)
+        if not finite.any():
+            raise ValueError(f"Scaling «{expression}» не даёт конечных значений")
+        distance = np.where(finite, np.abs(phys - value), np.inf)
+        best = int(raws[int(np.argmin(distance))])
+        if best == current:
+            direction = 1.0 if value > current_phys else -1.0
+            step = (phys - current_phys) * direction
+            ahead = finite & (step > 0)
+            if not ahead.any():
+                return float(current)  # уже на границе диапазона типа
+            best = int(raws[int(np.argmin(np.where(ahead, step, np.inf)))])
+        return float(best)
+
+    raw = eval_expression(to_byte, value)
+    if not math.isfinite(raw):
+        raise ValueError(f"Значение {value} не переводится в байты (to_byte «{to_byte}»)")
+    if st in _INT_RANGES:
+        lo, hi = _INT_RANGES[st]
+        return float(min(max(round(raw), lo), hi))
+    return raw
+
+
+def _write_raw(rom: bytearray, address: int, storagetype: str, endian: str, raw: float) -> None:
+    fmt, size = _struct_format(storagetype, endian)
+    if address + size > len(rom):
+        raise ValueError(f"ROM truncated: need {address + size} bytes for value at 0x{address:X}")
+    packed = struct.pack(fmt, raw if fmt.endswith("f") else int(raw))
+    rom[address : address + size] = packed
+
+
+def _write_physical(
+    rom: bytearray,
+    address: int,
+    storagetype: str,
+    endian: str,
+    scaling: Scaling | None,
+    value: float,
+) -> float:
+    """Записать одно значение; вернуть то, что реально легло в ROM (после квантования)."""
+    (current_raw,) = read_raw_values(rom, address, 1, storagetype, endian)
+    raw = encode_value(value, scaling, storagetype, current_raw)
+    if raw != current_raw:
+        _write_raw(rom, address, storagetype, endian, raw)
+    (stored_raw,) = read_raw_values(rom, address, 1, storagetype, endian)
+    return apply_scaling([stored_raw], scaling)[0]
+
+
+def write_table_cell(rom: bytearray, table: TableDef, row: int, col: int, value: float) -> float:
+    if table.storageaddress is None:
+        raise ValueError(f"Table '{table.name}' has no storageaddress")
+    rows, cols = table_dimensions(table)
+    if not (0 <= row < rows and 0 <= col < cols):
+        raise IndexError(f"Cell ({row}, {col}) outside {rows}×{cols}")
+    _, size = _struct_format(table.storagetype, table.endian)
+    # Тот же порядок, что при чтении: row-major, Y затем X
+    address = table.storageaddress + (row * cols + col) * size
+    return _write_physical(rom, address, table.storagetype, table.endian, table.scaling, value)
+
+
+def write_axis_value(rom: bytearray, axis: AxisDef | None, index: int, value: float) -> float:
+    if axis is None or is_static_axis(axis) or axis.storageaddress is None:
+        raise ValueError("Ось не хранится в ROM и не редактируется")
+    if index < 0 or (axis.size is not None and index >= axis.size):
+        raise IndexError(f"Axis index {index} out of range")
+    _, size = _struct_format(axis.storagetype, axis.endian)
+    address = axis.storageaddress + index * size
+    return _write_physical(rom, address, axis.storagetype, axis.endian, axis.scaling, value)
