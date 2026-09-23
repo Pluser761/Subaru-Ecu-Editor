@@ -92,6 +92,8 @@ class SurfaceView(QWidget):
         self._view = gl.GLViewWidget()
         self._view.setBackgroundColor(BACKGROUND)
         self._view.installEventFilter(self)
+        # Фокус по клику — чтобы клавиши шага работали и из 3D-вида
+        self._view.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
 
         grid = gl.GLGridItem(color=FLOOR_GRID_RGBA)
         grid.setSize(SIZE_XY, SIZE_XY)
@@ -143,6 +145,11 @@ class SurfaceView(QWidget):
 
         self.reset_camera()
         self.clear()
+
+    @property
+    def gl_widget(self) -> QWidget:
+        """Виджет OpenGL — в фокусе при работе с 3D (для перехвата клавиш)."""
+        return self._view
 
     def _items(self) -> tuple[gl.GLGraphicsItem, ...]:
         return (

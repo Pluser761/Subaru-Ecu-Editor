@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from PyQt6.QtCore import Qt, QModelIndex, QRect, QEvent, pyqtSignal
 from PyQt6.QtGui import QValidator, QMouseEvent, QKeySequence
 from PyQt6.QtWidgets import (
@@ -452,6 +454,36 @@ class TableEditor(QTableWidget):
                 self.cell_value_changed.emit(top + dr, left + dc, value)
 
         self.matrix_pasted.emit(paste_rows, paste_cols)
+
+    def adjust_selected(self, delta: float) -> int:
+        """Прибавить delta ко всем выделенным ячейкам; вернуть число изменённых."""
+        cells = sorted(self.selected_cells())
+        if not cells and self.currentRow() >= 0 and self.currentColumn() >= 0:
+            cells = [(self.currentRow(), self.currentColumn())]
+
+        changed: list[tuple[int, int, float]] = []
+        self._updating = True
+        try:
+            for row, col in cells:
+                item = self.item(row, col)
+                if item is None:
+                    continue
+                try:
+                    value = parse_cell_value(item.text())
+                except ValueError:
+                    continue
+                if not math.isfinite(value):
+                    continue
+                # Округляем как при отображении, чтобы не копить ошибку float
+                new_value = round(value + delta, 2)
+                self._set_cell_value(row, col, new_value)
+                changed.append((row, col, new_value))
+        finally:
+            self._updating = False
+
+        for row, col, value in changed:
+            self.cell_value_changed.emit(row, col, value)
+        return len(changed)
 
     def _set_cell_value(self, row: int, col: int, value: float) -> None:
         item = self.item(row, col)

@@ -100,7 +100,8 @@ class EcuParser:
         values = read_table_matrix(self.rom_bytes, table)
         x_axis = read_axis_values(self.rom_bytes, table.x_axis, cols)
         y_axis = read_axis_values(self.rom_bytes, table.y_axis, rows)
-        unit = table.scaling.units if table.scaling else ""
+        scaling = table.scaling
+        unit = scaling.units if scaling else ""
         return CalibrationTable(
             name=table.name,
             values=values,
@@ -109,4 +110,6 @@ class EcuParser:
             x_labels=read_axis_labels(table.x_axis, cols),
             y_labels=read_axis_labels(table.y_axis, rows),
             unit=unit,
+            fine_increment=scaling.fine_increment if scaling else None,
+            coarse_increment=scaling.coarse_increment if scaling else None,
         )

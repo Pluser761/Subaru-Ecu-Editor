@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import (
     QWidget,
     QHBoxLayout,
@@ -14,6 +15,8 @@ from PyQt6.QtWidgets import (
 )
 
 from src.core.models import CalibrationTable, MapInfo
+from src.ui.key_bindings import Action, KeyBindings, is_fine_modifier
+from src.ui.widgets.step_controls import StepControls
 from src.ui.widgets.surface_view import SurfaceView
 from src.ui.widgets.table_editor import TableEditor
 
@@ -23,8 +26,9 @@ class EditorView(QWidget):
 
     map_selected = pyqtSignal(str)
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, key_bindings: KeyBindings | None = None, parent=None) -> None:
         super().__init__(parent)
+        self._key_bindings = key_bindings or KeyBindings(self)
 
         self._map_tree = QTreeWidget()
         self._map_tree.setHeaderLabel("Maps")
@@ -39,6 +43,11 @@ class EditorView(QWidget):
 
         self._table = TableEditor()
         self._surface = SurfaceView()
+        self._steps = StepControls()
+
+        # Клавиши шага работают, когда в фокусе таблица или 3D-вид
+        self._table.installEventFilter(self)
+        self._surface.gl_widget.installEventFilter(self)
 
         # Правки/вставки шлют сигнал на каждую ячейку — схлопываем в одну перерисовку
         self._surface_timer = QTimer(self)
@@ -55,6 +64,7 @@ class EditorView(QWidget):
         right.setContentsMargins(8, 0, 0, 0)
         right.addWidget(self._title)
         right.addWidget(self._meta)
+        right.addWidget(self._steps)
 
         table_frame = QFrame()
         table_frame.setFrameShape(QFrame.Shape.StyledPanel)
@@ -106,6 +116,7 @@ class EditorView(QWidget):
         unit = f" · {table.unit}" if table.unit else ""
         self._meta.setText(f"{table.rows} × {table.cols}{unit}")
         self._table.set_table(table)
+        self._steps.set_increments(table.fine_increment, table.coarse_increment)
         self._refresh_surface()
 
     def clear_table(self) -> None:
@@ -134,6 +145,22 @@ class EditorView(QWidget):
             x_labels=self._table.axis_labels(Qt.Orientation.Horizontal),
             y_labels=self._table.axis_labels(Qt.Orientation.Vertical),
         )
+
+    @property
+    def step_controls(self) -> StepControls:
+        return self._steps
+
+    def eventFilter(self, obj: QObject | None, event: QEvent | None) -> bool:
+        if isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
+            action = self._key_bindings.action_for(event)
+            if action is not None and self._table.rowCount() > 0:
+                step = self._steps.fine_step if is_fine_modifier(event) else self._steps.coarse_step
+                delta = step if action is Action.INCREASE else -step
+                count = self._table.adjust_selected(delta)
+                if count:
+                    self._table.operation_info.emit(f"{delta:+.2f} → ячеек: {count}")
+                return True
+        return super().eventFilter(obj, event)
 
     def _on_surface_point_clicked(self, row: int, col: int, additive: bool) -> None:
         if additive:

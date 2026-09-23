@@ -15,6 +15,9 @@ class CalibrationTable(BaseModel):
     x_labels: list[str] | None = None
     y_labels: list[str] | None = None
     unit: str = ""
+    # Шаги изменения из scaling (fineincrement / coarseincrement), если заданы
+    fine_increment: float | None = None
+    coarse_increment: float | None = None
 
     @property
     def rows(self) -> int:
@@ -42,6 +45,8 @@ class Scaling(BaseModel):
     expression: str = "x"
     to_byte: str = "x"
     format: str = "0.00"
+    fine_increment: float | None = None
+    coarse_increment: float | None = None
 
 
 class AxisDef(BaseModel):

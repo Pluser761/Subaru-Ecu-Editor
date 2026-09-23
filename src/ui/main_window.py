@@ -13,6 +13,8 @@ from PyQt6.QtWidgets import (
 )
 
 from src.ui.editor_view import EditorView
+from src.ui.key_bindings import KeyBindings
+from src.ui.settings_dialog import SettingsDialog
 from src.ui.widgets.status_line import StatusLine
 
 
@@ -24,7 +26,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Subaru ECU Editor")
         self.setGeometry(100, 100, 1100, 700)
 
-        self.editor_view = EditorView()
+        # Настройки живут в памяти процесса (без сохранения между запусками)
+        self.key_bindings = KeyBindings(self)
+        self.editor_view = EditorView(self.key_bindings)
 
         tools_placeholder = QLabel("Tools — скоро (интерполятор и др.)")
         tools_placeholder.setStyleSheet("color: #888; padding: 24px; font-size: 13px;")
@@ -66,6 +70,18 @@ class MainWindow(QMainWindow):
         file_menu.addAction(save_action)
 
         file_menu.addSeparator()
+        settings_action = QAction("Settings…", self)
+        # У Preferences нет стандартной клавиши на Windows — тогда Ctrl+,
+        if QKeySequence.keyBindings(QKeySequence.StandardKey.Preferences):
+            settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
+        else:
+            settings_action.setShortcut(QKeySequence("Ctrl+,"))
+        # На macOS пункт переедет в меню приложения, как принято (⌘,)
+        settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
+        settings_action.triggered.connect(self.show_settings)
+        file_menu.addAction(settings_action)
+
+        file_menu.addSeparator()
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
@@ -80,6 +96,9 @@ class MainWindow(QMainWindow):
         tools_action = QAction("&Tools", self)
         tools_action.triggered.connect(self._emit_show_tools)
         view_menu.addAction(tools_action)
+
+    def show_settings(self) -> None:
+        SettingsDialog(self.key_bindings, self).exec()
 
     def show_editor(self) -> None:
         self._stack.setCurrentIndex(0)

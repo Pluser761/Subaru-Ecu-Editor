@@ -51,6 +51,15 @@ def _text(el: ET.Element | None, default: str = "") -> str:
     return el.text.strip()
 
 
+def _parse_float(text: str | None) -> float | None:
+    if text is None or text.strip() == "":
+        return None
+    try:
+        return float(text.strip())
+    except ValueError:
+        return None
+
+
 def _parse_scaling(el: ET.Element | None) -> Scaling | None:
     if el is None:
         return None
@@ -59,6 +68,8 @@ def _parse_scaling(el: ET.Element | None) -> Scaling | None:
         expression=el.attrib.get("expression", "x"),
         to_byte=el.attrib.get("to_byte", "x"),
         format=el.attrib.get("format", "0.00"),
+        fine_increment=_parse_float(el.attrib.get("fineincrement")),
+        coarse_increment=_parse_float(el.attrib.get("coarseincrement")),
     )
 
 
