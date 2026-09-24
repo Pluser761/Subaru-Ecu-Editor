@@ -10,6 +10,8 @@ from PyQt6.QtCore import QEvent, QObject, QPointF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QFontMetrics, QMouseEvent, QPainter, QResizeEvent, QTransform, QVector3D
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from src.ui.value_colors import NON_FINITE_RGB, VALUE_STOPS
+
 # Размер сцены: оси X/Y нормируются в [0, SIZE_XY], значения — в [0, SIZE_Z]
 SIZE_XY = 10.0
 SIZE_Z = 5.0
@@ -44,19 +46,10 @@ AXIS_LABEL_WORLD_PER_PX = 0.03
 AXIS_LABEL_LINE_GAP_PX = 2
 
 # Ячейки с inf/nan (деление на ноль в scaling) — серые и лежат на уровне минимума
-NON_FINITE_RGBA = (0.6, 0.6, 0.6, 1.0)
+NON_FINITE_RGBA = tuple(c / 255 for c in NON_FINITE_RGB) + (1.0,)
 
-# Классическая «тюнинговая» шкала: синий (мин) → красный (макс)
-VALUE_COLORMAP = pg.ColorMap(
-    pos=[0.0, 0.25, 0.5, 0.75, 1.0],
-    color=[
-        (40, 80, 220),
-        (40, 190, 220),
-        (60, 200, 80),
-        (240, 210, 40),
-        (220, 50, 40),
-    ],
-)
+# Шкала синий (мин) → красный (макс), общая с таблицей и 2D-графиком
+VALUE_COLORMAP = pg.ColorMap(pos=[p for p, _ in VALUE_STOPS], color=[c for _, c in VALUE_STOPS])
 
 # Подсветка выделения рисуется поверх меша, без теста глубины
 _OVERLAY_GL_OPTIONS = {
@@ -392,14 +385,13 @@ class SurfaceView(QWidget):
         x_labels / y_labels — подписи статических осей для надписей сцены.
         """
         z = np.asarray(values, dtype=float)
-        if z.ndim != 2 or z.size < 2:
+        if z.ndim != 2 or z.shape[0] < 2 or z.shape[1] < 2:
             self.clear()
             return
 
         rows, cols = z.shape
-        # Вектор (2D-таблица) кладём посередине сетки по «пустой» оси
-        xs = normalize_axis(x_axis, cols) * SIZE_XY if cols > 1 else np.full(1, SIZE_XY / 2)
-        ys = normalize_axis(y_axis, rows) * SIZE_XY if rows > 1 else np.full(1, SIZE_XY / 2)
+        xs = normalize_axis(x_axis, cols) * SIZE_XY
+        ys = normalize_axis(y_axis, rows) * SIZE_XY
 
         finite = np.isfinite(z)
         if finite.any():
@@ -418,13 +410,9 @@ class SurfaceView(QWidget):
         colors[~finite] = NON_FINITE_RGBA
         cells = [(r, c) for r, c in (selected or ()) if r < rows and c < cols]
 
-        if rows >= 2 and cols >= 2:
-            self._show_surface(xs, ys, zs, colors)
-        else:
-            self._show_line(xs, ys, zs, colors)
-
+        self._show_surface(xs, ys, zs, colors)
         self._show_selection(xs, ys, zs, cells)
-        self._set_labels(x_axis, y_axis, x_labels, y_labels, x_title, y_title, z_min, z_max, rows, cols)
+        self._set_labels(x_axis, y_axis, x_labels, y_labels, x_title, y_title, z_min, z_max)
 
     def _show_surface(self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, colors: np.ndarray) -> None:
         # GLSurfacePlotItem ждёт z[ix, iy] — транспонируем из [row, col];
@@ -436,19 +424,6 @@ class SurfaceView(QWidget):
             colors=colors.transpose(1, 0, 2).reshape(-1, 4),
         )
         self._surface.setVisible(True)
-        self._line.setVisible(False)
-        self._points.setVisible(False)
-
-    def _show_line(self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, colors: np.ndarray) -> None:
-        # 2D-таблица (вектор): рисуем кривую вдоль той оси, по которой есть длина
-        rows, cols = zs.shape
-        pos = np.array([(xs[c], ys[r], zs[r, c]) for r in range(rows) for c in range(cols)])
-        flat_colors = colors.reshape(-1, 4)
-        self._line.setData(pos=pos, color=flat_colors)
-        self._points.setData(pos=pos, color=flat_colors)
-        self._line.setVisible(True)
-        self._points.setVisible(True)
-        self._surface.setVisible(False)
 
     def _show_selection(
         self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, cells: list[tuple[int, int]]
@@ -480,14 +455,12 @@ class SurfaceView(QWidget):
         y_title: str,
         z_min: float,
         z_max: float,
-        rows: int,
-        cols: int,
     ) -> None:
         off = SIZE_XY * 0.06
         # Подписи осей — посередине рёбер и дальше от сетки, чтобы X и Y не слипались
         axis_off = SIZE_XY * 0.14
-        x_name, x_range = _axis_caption("X", x_title, x_axis, x_labels) if cols > 1 else ("", "")
-        y_name, y_range = _axis_caption("Y", y_title, y_axis, y_labels) if rows > 1 else ("", "")
+        x_name, x_range = _axis_caption("X", x_title, x_axis, x_labels)
+        y_name, y_range = _axis_caption("Y", y_title, y_axis, y_labels)
         x_pos = (SIZE_XY / 2, -axis_off, 0.0)
         y_pos = (-axis_off, SIZE_XY / 2, 0.0)
         placements: dict[str, tuple[tuple[float, float, float], str]] = {

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt
 
+from src.core.models import Checkpoint
 from src.core.parser import EcuParser
 from src.core.transfer import apply_transfer, check_compatibility, plan_transfer, render_report, save_report
 from src.core.xml_reader import EcuDefsRepository
@@ -33,7 +34,7 @@ class MainPresenter:
         self._current_map_id: str | None = None
         self._dirty = False
         # Checkpoint каждой карты живёт, пока открыт ROM: переключение карт его не сбрасывает
-        self._checkpoints: dict[str, list[list[float]]] = {}
+        self._checkpoints: dict[str, Checkpoint] = {}
 
         window.on_open_rom = self.open_rom
         window.on_save_rom = self.save_rom
@@ -43,9 +44,10 @@ class MainPresenter:
 
         editor = window.editor_view
         editor.map_selected.connect(self.select_map)
-        editor.table_editor.cell_value_changed.connect(self.on_cell_changed)
-        editor.table_editor.x_axis_changed.connect(self.on_x_axis_changed)
-        editor.table_editor.y_axis_changed.connect(self.on_y_axis_changed)
+        # Правки — от EditorView: в координатах карты в ROM, даже если она показана иначе
+        editor.cell_value_changed.connect(self.on_cell_changed)
+        editor.x_axis_changed.connect(self.on_x_axis_changed)
+        editor.y_axis_changed.connect(self.on_y_axis_changed)
         editor.table_editor.matrix_copied.connect(self.on_matrix_copied)
         editor.table_editor.matrix_pasted.connect(self.on_matrix_pasted)
         editor.table_editor.operation_error.connect(self.on_operation_error)
@@ -56,6 +58,13 @@ class MainPresenter:
             window.key_bindings.changed.connect(
                 lambda: settings.save_key_bindings(window.key_bindings.as_dict())
             )
+            graph = window.editor_view.graph_window
+            geometry = settings.graph_geometry()
+            if geometry is not None:
+                graph.restoreGeometry(geometry)
+            window.graph_action.setChecked(settings.graph_enabled())
+            window.graph_action.toggled.connect(settings.set_graph_enabled)
+            window.on_close = lambda: settings.set_graph_geometry(graph.saveGeometry())
 
         self._window.editor_view.clear_table()
         self._window.editor_view.set_maps([])
@@ -147,7 +156,7 @@ class MainPresenter:
 
         editor = self._window.editor_view
         if self._current_map_id is not None:
-            self._checkpoints[self._current_map_id] = editor.checkpoint_values()
+            self._checkpoints[self._current_map_id] = editor.checkpoint()
         try:
             report = apply_transfer(donor, self._parser, names, plan)
         except Exception as exc:  # noqa: BLE001
@@ -155,9 +164,9 @@ class MainPresenter:
             return
 
         # Рамки checkpoint показывают изменения относительно состояния до переноса
-        for name, values in report.before_values.items():
-            self._checkpoints.setdefault(name, values)
-        self._dirty = self._dirty or bool(report.before_values)
+        for name, checkpoint in report.before.items():
+            self._checkpoints.setdefault(name, checkpoint)
+        self._dirty = self._dirty or bool(report.before)
         if self._current_map_id is not None:
             self.select_map(self._current_map_id)
 
@@ -170,7 +179,7 @@ class MainPresenter:
         else:
             report_file = saved
             self._window.set_status(
-                f"Перенесено из {report.source_id}: {len(report.before_values)} таблиц · отчёт {saved.name}"
+                f"Перенесено из {report.source_id}: {len(report.before)} таблиц · отчёт {saved.name}"
             )
         self._window.show_transfer_report(markdown, report_file)
 
@@ -184,7 +193,7 @@ class MainPresenter:
     def select_map(self, map_id: str) -> None:
         editor = self._window.editor_view
         if self._current_map_id is not None:
-            self._checkpoints[self._current_map_id] = editor.checkpoint_values()
+            self._checkpoints[self._current_map_id] = editor.checkpoint()
         try:
             table = self._parser.load_table(map_id)
         except Exception as exc:  # noqa: BLE001
@@ -222,6 +231,12 @@ class MainPresenter:
         if map_id is None:
             return
         editor = self._window.editor_view
+        shared = self._parser.shared_axis_tables(map_id, axis)
+        # Общая ось поменяется и у других таблиц: снимаем их checkpoint до записи,
+        # иначе при первом открытии они примут новую ось за исходную и рамок не будет
+        for name in shared:
+            if name not in self._checkpoints:
+                self._checkpoints[name] = _checkpoint_of(self._parser, name)
         try:
             stored = self._parser.write_axis(map_id, axis, index, value)
         except Exception as exc:  # noqa: BLE001
@@ -230,7 +245,6 @@ class MainPresenter:
             return
         editor.update_axis(orientation, index, stored)
         self._dirty = True
-        shared = self._parser.shared_axis_tables(map_id, axis)
         note = f" — ось общая, изменилась и у других таблиц: {len(shared)}" if shared else ""
         self._window.set_status(f"Ось {axis.upper()} [{map_id}] {index} = {stored:.2f}{note}")
 
@@ -246,3 +260,9 @@ class MainPresenter:
 
     def on_operation_info(self, message: str) -> None:
         self._window.set_status(message)
+
+
+def _checkpoint_of(parser: EcuParser, map_id: str) -> Checkpoint:
+    """Текущее состояние карты как checkpoint (значения и оси, координаты ROM)."""
+    table = parser.load_table(map_id)
+    return Checkpoint(values=table.values, x_axis=table.x_axis, y_axis=table.y_axis)

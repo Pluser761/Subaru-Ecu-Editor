@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QSettings
+from PyQt6.QtCore import QByteArray, QSettings
 from PyQt6.QtGui import QKeySequence
 
 from src.ui.key_bindings import DEFAULT_KEYS, MODIFIER_KEYS, Action
@@ -10,6 +10,8 @@ SETTINGS_APP = "settings"
 
 _KEY_PREFIX = "keys/"
 _LAST_ROM = "session/last_rom"
+_GRAPH_ENABLED = "graph/enabled"
+_GRAPH_GEOMETRY = "graph/geometry"
 
 
 class AppSettings:
@@ -63,6 +65,25 @@ class AppSettings:
             self._settings.setValue(_LAST_ROM, path)
         else:
             self._settings.remove(_LAST_ROM)
+        self._settings.sync()
+
+    # --- Окно графика ---
+
+    def graph_enabled(self) -> bool:
+        value = self._settings.value(_GRAPH_ENABLED, True)
+        # INI хранит bool строкой
+        return value not in (False, "false", "0", 0)
+
+    def set_graph_enabled(self, enabled: bool) -> None:
+        self._settings.setValue(_GRAPH_ENABLED, enabled)
+        self._settings.sync()
+
+    def graph_geometry(self) -> QByteArray | None:
+        value = self._settings.value(_GRAPH_GEOMETRY)
+        return value if isinstance(value, QByteArray) and not value.isEmpty() else None
+
+    def set_graph_geometry(self, geometry: QByteArray) -> None:
+        self._settings.setValue(_GRAPH_GEOMETRY, geometry)
         self._settings.sync()
 
 

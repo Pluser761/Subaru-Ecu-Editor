@@ -24,7 +24,9 @@ class StepControls(QWidget):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(QLabel("Шаг: мелкий (Ctrl)"))
+        self._caption = QLabel()
+        self.set_axis_mode(False)
+        layout.addWidget(self._caption)
         layout.addWidget(self._fine)
         layout.addWidget(QLabel("крупный"))
         layout.addWidget(self._coarse)
@@ -46,6 +48,10 @@ class StepControls(QWidget):
     @property
     def coarse_step(self) -> float:
         return self._coarse.value()
+
+    def set_axis_mode(self, axis: bool) -> None:
+        """Подпись: шаги значений таблицы или шаги выделенной оси."""
+        self._caption.setText("Шаг оси: мелкий (Ctrl)" if axis else "Шаг: мелкий (Ctrl)")
 
     def set_increments(self, fine: float | None, coarse: float | None) -> None:
         """Шаги из definition таблицы; если не заданы — остаются текущие."""

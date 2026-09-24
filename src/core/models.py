@@ -24,6 +24,9 @@ class CalibrationTable(BaseModel):
     # Шаги изменения из scaling (fineincrement / coarseincrement), если заданы
     fine_increment: float | None = None
     coarse_increment: float | None = None
+    # Шаги осей (из scaling оси): (мелкий, крупный); None — ось не из ROM или шаги не заданы
+    x_increments: tuple[float | None, float | None] | None = None
+    y_increments: tuple[float | None, float | None] | None = None
 
     @property
     def rows(self) -> int:
@@ -32,6 +35,14 @@ class CalibrationTable(BaseModel):
     @property
     def cols(self) -> int:
         return len(self.values[0]) if self.values else 0
+
+
+class Checkpoint(BaseModel):
+    """Точка отсчёта для подсветки изменений карты: значения и оси (координаты ROM)."""
+
+    values: list[list[float]]
+    x_axis: list[float] = Field(default_factory=list)
+    y_axis: list[float] = Field(default_factory=list)
 
 
 class MapInfo(BaseModel):

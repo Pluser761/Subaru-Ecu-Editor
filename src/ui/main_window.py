@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtGui import QAction, QCloseEvent, QKeySequence
 from PyQt6.QtWidgets import (
     QMainWindow,
     QStackedWidget,
@@ -56,6 +56,8 @@ class MainWindow(QMainWindow):
         self.on_show_editor: Callable[[], None] | None = None
         self.on_show_tools: Callable[[], None] | None = None
         self.on_transfer_maps: Callable[[], None] | None = None
+        # Перед закрытием окна (сохранение настроек)
+        self.on_close: Callable[[], None] | None = None
 
     def _build_menu(self) -> None:
         menu = self.menuBar()
@@ -101,11 +103,28 @@ class MainWindow(QMainWindow):
         tools_action.triggered.connect(self._emit_show_tools)
         view_menu.addAction(tools_action)
 
+        view_menu.addSeparator()
+        # Окно графика: включено — показывается само для карт с графиком (2D/3D)
+        self.graph_action = QAction("&Graph Window", self)
+        self.graph_action.setCheckable(True)
+        self.graph_action.setChecked(True)
+        self.graph_action.setShortcut(QKeySequence("Ctrl+G"))
+        self.graph_action.toggled.connect(self.editor_view.set_graph_enabled)
+        self.editor_view.graph_closed.connect(lambda: self.graph_action.setChecked(False))
+        view_menu.addAction(self.graph_action)
+
         maps_menu = menu.addMenu("&Maps")
         assert maps_menu is not None
         transfer_action = QAction("Transfer Maps from ROM…", self)
         transfer_action.triggered.connect(self._emit_transfer_maps)
         maps_menu.addAction(transfer_action)
+
+    def closeEvent(self, event: QCloseEvent | None) -> None:
+        if self.on_close:
+            self.on_close()
+        # hide, а не close: закрытие окна графика пользователем выключает его автопоказ
+        self.editor_view.graph_window.hide()
+        super().closeEvent(event)
 
     def show_settings(self) -> None:
         SettingsDialog(self.key_bindings, self).exec()

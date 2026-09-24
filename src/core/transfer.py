@@ -21,7 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
-from src.core.models import AxisDef, TableDef
+from src.core.models import AxisDef, Checkpoint, TableDef
+from src.core.interpolation import resample_grid, strictly_monotonic
 from src.core.parser import EcuParser
 from src.core.rom_io import (
     is_static_axis,
@@ -107,13 +108,6 @@ def _transferable(tables: dict[str, TableDef]) -> dict[str, TableDef]:
     }
 
 
-def _strictly_monotonic(values: np.ndarray) -> bool:
-    if len(values) < 2 or not np.all(np.isfinite(values)):
-        return False
-    diffs = np.diff(values)
-    return bool(np.all(diffs > 0) or np.all(diffs < 0))
-
-
 def _plan_axis(
     label: str,
     source: EcuParser,
@@ -140,7 +134,7 @@ def _plan_axis(
     if n_source == n_target:
         return plan(AxisMode.COPY), None
     source_values = np.array(read_axis_values(source.rom_bytes, source_axis, n_source))
-    if not _strictly_monotonic(source_values):
+    if not strictly_monotonic(source_values):
         return plan(AxisMode.INTERPOLATE), f"ось {label} в B немонотонна"
     return plan(AxisMode.INTERPOLATE), None
 
@@ -195,34 +189,6 @@ def resample_axis(source_axis: np.ndarray, count: int) -> np.ndarray:
     return np.interp(positions, np.arange(len(src)), src)
 
 
-def _interp_1d(xp: np.ndarray, fp: np.ndarray, x: np.ndarray) -> np.ndarray:
-    """Линейная интерполяция по значениям оси; вне диапазона — крайние значения.
-    Если ось немонотонна (статические подписи и т.п.), сопоставляем по индексу."""
-    if len(xp) == 1:
-        return np.full(len(x), fp[0])
-    if _strictly_monotonic(xp):
-        if xp[0] > xp[-1]:
-            xp, fp = xp[::-1], fp[::-1]
-        return np.interp(x, xp, fp)
-    if len(xp) == len(x):
-        return fp.copy()
-    raise ValueError("ось немонотонна, а число точек различается")
-
-
-def resample_grid(
-    values: np.ndarray,
-    src_x: np.ndarray,
-    src_y: np.ndarray,
-    dst_x: np.ndarray,
-    dst_y: np.ndarray,
-) -> np.ndarray:
-    """Билинейная интерполяция матрицы [rows=Y, cols=X] с осей src на оси dst.
-    В узлах, совпадающих с исходными, значения точные."""
-    grid = np.asarray(values, dtype=float)
-    along_x = np.array([_interp_1d(src_x, row, dst_x) for row in grid])
-    return np.array([_interp_1d(src_y, col, dst_y) for col in along_x.T]).T
-
-
 def _index_coords(n: int) -> np.ndarray:
     return np.arange(n, dtype=float)
 
@@ -264,8 +230,8 @@ class TransferReport:
     target_path: str
     created: datetime
     results: list[TableResult]
-    # Значения изменённых таблиц A до переноса — для рамок checkpoint
-    before_values: dict[str, list[list[float]]]
+    # Изменённые таблицы A до переноса (значения и оси) — для рамок checkpoint
+    before: dict[str, Checkpoint]
 
     def count(self, status: ResultStatus) -> int:
         return sum(1 for r in self.results if r.status is status)
@@ -441,8 +407,14 @@ def apply_transfer(
         target_path=target.file_path or "",
         created=datetime.now(),
         results=ordered,
-        before_values={
-            name: np.round(before[name].values, 2).tolist() for name in changed if name in before
+        before={
+            name: Checkpoint(
+                values=np.round(before[name].values, 2).tolist(),
+                x_axis=np.round(before[name].x, 2).tolist(),
+                y_axis=np.round(before[name].y, 2).tolist(),
+            )
+            for name in changed
+            if name in before
         },
     )
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
-from src.core.models import CalibrationTable, MapInfo, RomDefinition, TableDef
+from src.core.models import AxisDef, CalibrationTable, MapInfo, RomDefinition, TableDef
 from src.core.rom_io import (
     axis_title,
     is_writable_axis,
@@ -168,4 +168,12 @@ class EcuParser:
             unit=unit,
             fine_increment=scaling.fine_increment if scaling else None,
             coarse_increment=scaling.coarse_increment if scaling else None,
+            x_increments=_axis_increments(table.x_axis),
+            y_increments=_axis_increments(table.y_axis),
         )
+
+
+def _axis_increments(axis: AxisDef | None) -> tuple[float | None, float | None] | None:
+    if not is_writable_axis(axis) or axis is None or axis.scaling is None:
+        return None
+    return axis.scaling.fine_increment, axis.scaling.coarse_increment
