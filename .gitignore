@@ -23,8 +23,6 @@ htmlcov/
 .DS_Store
 
 # ROM images (прошивки не коммитим)
-*.bin
-*.hex
-*.rom
+ecu
 
 tmp
