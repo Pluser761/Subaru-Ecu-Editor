@@ -2,23 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import math
-
 from PyQt6.QtCore import Qt, QTimer
 
-from src.core.models import Checkpoint
 from src.core.parser import EcuParser
-from src.core.transfer import apply_transfer, check_compatibility, plan_transfer, render_report, save_report
+from src.core.session import RomSession
+from src.core.transfer import check_compatibility, plan_transfer, render_report, save_report
 from src.core.xml_reader import EcuDefsRepository
 from src.ui.app_settings import AppSettings
 from src.ui.main_window import MainWindow
-from src.ui.map_window import describe_shape
+from src.ui.map.window import MapWindow, describe_shape
 
 DEFAULT_DEFS = Path(__file__).resolve().parents[2] / "definitions" / "ecu_defs.xml"
 
 
 class MainPresenter:
-    """Связывает MainWindow / EditorView с EcuParser."""
+    """Связывает окна с сессией ROM: событие окна → сценарий RomSession → показать результат."""
 
     def __init__(
         self,
@@ -31,15 +29,10 @@ class MainPresenter:
         self._window = window
         # None — без сохранения настроек (тесты, встраивание)
         self._settings = settings
-        self._parser = parser or EcuParser()
+        self._session = RomSession(parser or EcuParser())
         self._defs_path = Path(defs_path) if defs_path else DEFAULT_DEFS
         self._defs_repo: EcuDefsRepository | None = None
-        self._dirty = False
-        # Checkpoint карт, чьи окна закрыты (или ещё не открывались): живёт, пока открыт ROM.
-        # У открытых окон актуальный checkpoint — в самом окне
-        self._checkpoints: dict[str, Checkpoint] = {}
-        # Карты, отличающиеся от своего checkpoint (отметка в дереве), и ждущие перепроверки
-        self._changed: set[str] = set()
+        # Карты, ждущие перепроверки «изменена ли» (отметка в дереве) — отложенно, пачкой
         self._to_check: set[str] = set()
 
         window.on_open_rom = self.open_rom
@@ -50,15 +43,7 @@ class MainPresenter:
 
         editor = window.editor_view
         editor.map_selected.connect(self.select_map)
-        # Правки — от окон карт через EditorView: с map_id, в координатах карты в ROM
-        editor.cell_value_changed.connect(self.on_cell_changed)
-        editor.x_axis_changed.connect(self.on_x_axis_changed)
-        editor.y_axis_changed.connect(self.on_y_axis_changed)
-        editor.map_closed.connect(self.on_map_closed)
-        editor.checkpoint_set.connect(self._check_changed)
-        editor.matrix_copied.connect(self.on_matrix_copied)
-        editor.matrix_pasted.connect(self.on_matrix_pasted)
-        editor.operation_error.connect(self.on_operation_error)
+        editor.map_opened.connect(self._connect_map_window)
         editor.operation_info.connect(self.on_operation_info)
 
         if settings is not None:
@@ -99,6 +84,10 @@ class MainPresenter:
             self._defs_repo = EcuDefsRepository.load(self._defs_path)
         return self._defs_repo
 
+    @property
+    def _parser(self) -> EcuParser:
+        return self._session.parser
+
     def _load_map_list(self) -> None:
         maps = self._parser.list_maps()
         self._window.editor_view.set_maps(maps)
@@ -114,7 +103,7 @@ class MainPresenter:
     def _open_rom_path(self, path: str) -> bool:
         try:
             repo = self._ensure_defs()
-            self._parser = EcuParser.open_rom(path, self._defs_path, defs_repo=repo)
+            parser = EcuParser.open_rom(path, self._defs_path, defs_repo=repo)
         except FileNotFoundError as exc:
             self._window.set_error(str(exc))
             return False
@@ -125,12 +114,10 @@ class MainPresenter:
             self._window.set_error(f"Ошибка открытия ROM: {exc}")
             return False
 
-        # Окна карт старого ROM закрываем до сброса checkpoint (закрытие их сохраняет)
         self._window.editor_view.close_all_maps()
-        self._dirty = False
-        self._checkpoints.clear()
-        self._changed.clear()
+        self._session = RomSession(parser)
         self._to_check.clear()
+        self._window.editor_view.set_changed_maps(set())
         self._window.set_rom_path(path)
         self._window.show_editor()
         # После show_editor — иначе его «Editor» затирает число карт в статусе
@@ -164,24 +151,14 @@ class MainPresenter:
             return
 
         editor = self._window.editor_view
-        # Checkpoint открытых окон — в общий словарь, чтобы перенос не затёр их точку отсчёта
-        for map_id in editor.open_maps():
-            checkpoint = editor.checkpoint(map_id)
-            if checkpoint is not None:
-                self._checkpoints[map_id] = checkpoint
         try:
-            report = apply_transfer(donor, self._parser, names, plan)
+            report = self._session.transfer(donor, names, plan)
         except Exception as exc:  # noqa: BLE001
             self._window.set_error(f"Перенос не выполнен: {exc}")
             return
-
-        # Рамки checkpoint показывают изменения относительно состояния до переноса
-        for name, checkpoint in report.before.items():
-            self._checkpoints.setdefault(name, checkpoint)
-        self._dirty = self._dirty or bool(report.before)
         # Открытые окна показывают перенесённые значения
         for map_id in editor.open_maps():
-            editor.reload_map(self._parser.load_table(map_id), self._checkpoints.pop(map_id, None))
+            editor.reload_map(self._session.load_table(map_id), self._session.checkpoint(map_id))
         self._check_changed(*report.before)
 
         markdown = render_report(report)
@@ -211,16 +188,28 @@ class MainPresenter:
             editor.raise_map(map_id)
             return
         try:
-            table = self._parser.load_table(map_id)
+            table = self._session.load_table(map_id)
         except Exception as exc:  # noqa: BLE001
             self._window.set_error(f"Не удалось загрузить карту: {exc}")
             return
-        # Checkpoint переходит в окно и вернётся в словарь при его закрытии
-        editor.open_map(table, self._checkpoints.pop(map_id, None))
+        editor.open_map(table, self._session.checkpoint(map_id))
         self._window.set_status(f"Карта: {table.name.strip()} · {describe_shape(table.rows, table.cols, '')}")
 
-    def on_map_closed(self, map_id: str, checkpoint: Checkpoint) -> None:
-        self._checkpoints[map_id] = checkpoint
+    def _connect_map_window(self, window: MapWindow) -> None:
+        """Правки из окна карты — с map_id, в координатах карты в ROM."""
+        window.cell_value_changed.connect(self.on_cell_changed)
+        window.x_axis_changed.connect(self.on_x_axis_changed)
+        window.y_axis_changed.connect(self.on_y_axis_changed)
+        window.checkpoint_set.connect(self.on_checkpoint_set)
+        window.matrix_copied.connect(self.on_matrix_copied)
+        window.matrix_pasted.connect(self.on_matrix_pasted)
+        window.operation_error.connect(self.on_operation_error)
+        window.operation_info.connect(self.on_operation_info)
+
+    def on_checkpoint_set(self, map_id: str) -> None:
+        """В окне карты нажали Set checkpoint — точка отсчёта сессии та же, что на экране."""
+        self._session.set_checkpoint(map_id, self._window.editor_view.checkpoint(map_id))
+        self._check_changed(map_id)
 
     def _check_changed(self, *map_ids: str) -> None:
         """Перепроверить, отличаются ли карты от checkpoint — отложенно: шаг по сотне ячеек
@@ -230,20 +219,14 @@ class MainPresenter:
         self._to_check.update(map_ids)
 
     def _flush_changed(self) -> None:
-        editor = self._window.editor_view
-        for map_id in self._to_check:
-            checkpoint = editor.checkpoint(map_id) or self._checkpoints.get(map_id)
-            if checkpoint is not None and _differs(self._parser, map_id, checkpoint):
-                self._changed.add(map_id)
-            else:
-                self._changed.discard(map_id)
+        changed = self._session.refresh_changed(self._to_check)
         self._to_check.clear()
-        editor.set_changed_maps(self._changed)
+        self._window.editor_view.set_changed_maps(changed)
 
     def on_cell_changed(self, map_id: str, row: int, col: int, value: float) -> None:
         editor = self._window.editor_view
         try:
-            stored = self._parser.write_cell(map_id, row, col, value)
+            stored = self._session.write_cell(map_id, row, col, value)
         except Exception as exc:  # noqa: BLE001 — показать в статусбаре и откатить ячейку
             self._window.set_error(f"Не удалось записать ({row}, {col}): {exc}")
             editor.update_cell(map_id, row, col, self._parser.read_cell(map_id, row, col))
@@ -251,7 +234,6 @@ class MainPresenter:
         # В ячейке — то, что реально легло в ROM (квантование типа, границы диапазона)
         editor.update_cell(map_id, row, col, stored)
         self._check_changed(map_id)
-        self._dirty = True
         note = "" if round(stored, 2) == round(value, 2) else f" (введено {value:.2f})"
         self._window.set_status(f"Изменено [{map_id}] ({row}, {col}) = {stored:.2f}{note}")
 
@@ -263,26 +245,20 @@ class MainPresenter:
 
     def _on_axis_changed(self, map_id: str, axis: str, index: int, value: float) -> None:
         editor = self._window.editor_view
-        users = self._parser.shared_axis_users(map_id, axis)
-        shared = [name for name, _ in users]
-        # Общая ось поменяется и у других таблиц: снимаем checkpoint закрытых до записи,
-        # иначе при первом открытии они примут новую ось за исходную и рамок не будет
-        for name in shared:
-            if name not in self._checkpoints and not editor.has_map(name):
-                self._checkpoints[name] = _checkpoint_of(self._parser, name)
         try:
-            stored = self._parser.write_axis(map_id, axis, index, value)
+            result = self._session.write_axis(map_id, axis, index, value)
         except Exception as exc:  # noqa: BLE001
             self._window.set_error(f"Не удалось записать ось {axis.upper()}[{index}]: {exc}")
             editor.update_axis(map_id, _orientation(axis), index, self._parser.read_axis(map_id, axis, index))
             return
+        stored = result.stored
         editor.update_axis(map_id, _orientation(axis), index, stored)
         # Открытые окна карт на той же оси показывают её новое значение (у них это может быть
         # другая ось: X вместо Y)
-        for name, kind in users:
+        for name, kind in result.shared:
             editor.update_axis(name, _orientation(kind), index, stored)
-        self._check_changed(map_id, *shared)
-        self._dirty = True
+        self._check_changed(map_id, *(name for name, _ in result.shared))
+        shared = result.shared
         note = f" — ось общая, изменилась и у других таблиц: {len(shared)}" if shared else ""
         self._window.set_status(f"Ось {axis.upper()} [{map_id}] {index} = {stored:.2f}{note}")
 
@@ -290,7 +266,6 @@ class MainPresenter:
         self._window.set_status(f"Скопировано {rows}×{cols}")
 
     def on_matrix_pasted(self, rows: int, cols: int) -> None:
-        self._dirty = True
         self._window.set_status(f"Вставлено {rows}×{cols}")
 
     def on_operation_error(self, message: str) -> None:
@@ -300,36 +275,6 @@ class MainPresenter:
         self._window.set_status(message)
 
 
-def _checkpoint_of(parser: EcuParser, map_id: str) -> Checkpoint:
-    """Текущее состояние карты как checkpoint (значения и оси, координаты ROM)."""
-    table = parser.load_table(map_id)
-    return Checkpoint(values=table.values, x_axis=table.x_axis, y_axis=table.y_axis)
-
-
 def _orientation(axis: str) -> Qt.Orientation:
     """Ось карты в ROM → ориентация: "x" — Horizontal, "y" — Vertical."""
     return Qt.Orientation.Horizontal if axis == "x" else Qt.Orientation.Vertical
-
-
-# Совпадение с точностью отображения (2 знака), как у рамок checkpoint
-_EPSILON = 0.005
-
-
-def _differs(parser: EcuParser, map_id: str, checkpoint: Checkpoint) -> bool:
-    """Отличаются ли значения или оси карты в ROM от checkpoint."""
-    table = parser.load_table(map_id)
-    pairs = [(table.values, checkpoint.values)]
-    if checkpoint.x_axis:
-        pairs.append(([table.x_axis], [checkpoint.x_axis]))
-    if checkpoint.y_axis:
-        pairs.append(([table.y_axis], [checkpoint.y_axis]))
-    for current, base in pairs:
-        if len(current) != len(base) or any(len(a) != len(b) for a, b in zip(current, base)):
-            return True
-        for row_now, row_base in zip(current, base):
-            for now, was in zip(row_now, row_base):
-                if now == was:  # в т.ч. inf == inf
-                    continue
-                if not (math.isfinite(now) and math.isfinite(was)) or abs(now - was) >= _EPSILON:
-                    return True
-    return False

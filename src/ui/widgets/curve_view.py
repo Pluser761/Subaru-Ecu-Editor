@@ -5,7 +5,7 @@ import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
-from src.ui.widgets.surface_view import BACKGROUND, NON_FINITE_RGBA, VALUE_COLORMAP, hint_icon
+from src.ui.style import BACKGROUND, NON_FINITE_RGBA, VALUE_COLORMAP, hint_icon
 
 LINE_COLOR = (60, 60, 60)
 LINE_WIDTH = 2
@@ -112,7 +112,7 @@ class CurveView(QWidget):
         y_title: str = "",
         unit: str = "",
     ) -> None:
-        """values[row][col] как в TableEditor; вектор — одна строка или один столбец."""
+        """values[row][col] как в таблице карты; вектор — одна строка или один столбец."""
         z = np.asarray(values, dtype=float)
         if z.ndim != 2 or z.size < 2 or min(z.shape) != 1:
             self.clear()

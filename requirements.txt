@@ -4,3 +4,4 @@ pyqtgraph
 PyOpenGL
 numpy
 mypy
+pytest

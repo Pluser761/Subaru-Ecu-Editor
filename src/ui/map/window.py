@@ -11,16 +11,15 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QStackedWidget,
-    QTableWidgetSelectionRange,
     QVBoxLayout,
     QWidget,
 )
 
 from src.core.models import CalibrationTable, Checkpoint
 from src.ui.key_bindings import Action, KeyBindings, is_fine_modifier
-from src.ui.widgets.constant_editor import ConstantEditor
+from src.ui.map.constant_editor import ConstantEditor
+from src.ui.map.view import MapTableView
 from src.ui.widgets.step_controls import StepControls
-from src.ui.widgets.table_editor import TableEditor
 from src.ui.widgets.vertical_label import VerticalLabel
 
 # Нет ограничения высоты виджета (QWIDGETSIZE_MAX)
@@ -76,8 +75,7 @@ class MapWindow(QWidget):
     y_axis_changed = pyqtSignal(str, int, float)  # map_id, row, value
     # Окно стало активным — график переключается на эту карту
     activated = pyqtSignal(str)
-    # Окно закрыто; checkpoint карты — чтобы он пережил закрытие окна
-    closed = pyqtSignal(str, object)  # map_id, Checkpoint
+    closed = pyqtSignal(str)  # map_id
     # Значения/оси/выделение на экране изменились — перерисовать график
     display_changed = pyqtSignal(str)
     operation_info = pyqtSignal(str)
@@ -108,7 +106,7 @@ class MapWindow(QWidget):
         self._shared_axes.setStyleSheet("color: #b36b00;")
         self._shared_axes.setVisible(False)
 
-        self._table = TableEditor()
+        self._table = MapTableView()
         self._constant = ConstantEditor()
         self._steps = StepControls()
         self._table_name = ""
@@ -155,7 +153,7 @@ class MapWindow(QWidget):
         self._table.cell_value_changed.connect(self._schedule_display)
         self._table.x_axis_changed.connect(self._schedule_display)
         self._table.y_axis_changed.connect(self._schedule_display)
-        self._table.itemSelectionChanged.connect(self._schedule_display)
+        self._table.selection_changed.connect(self._schedule_display)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 10)
@@ -276,9 +274,9 @@ class MapWindow(QWidget):
             return None
         return {
             "name": self._table_name,
-            "values": self._table.get_values(),
-            "x_axis": self._table.get_x_axis(),
-            "y_axis": self._table.get_y_axis(),
+            "values": self._table.values(),
+            "x_axis": self._table.x_axis(),
+            "y_axis": self._table.y_axis(),
             "selected": self._table.selected_cells(),
             "x_labels": self._table.axis_labels(Qt.Orientation.Horizontal),
             "y_labels": self._table.axis_labels(Qt.Orientation.Vertical),
@@ -291,13 +289,7 @@ class MapWindow(QWidget):
         """Выделить ячейку (экранные координаты) — клик по точке графика."""
         if self._mode is _Mode.CONSTANT:
             return
-        if additive:
-            item = self._table.item(row, col)
-            selected = item is not None and item.isSelected()
-            self._table.setRangeSelected(QTableWidgetSelectionRange(row, col, row, col), not selected)
-        else:
-            self._table.setCurrentCell(row, col)
-        self._table.scrollToItem(self._table.item(row, col))
+        self._table.select_cell(row, col, additive)
 
     # --- Клавиши шага ---
 
@@ -344,7 +336,7 @@ class MapWindow(QWidget):
             self.activated.emit(self._map_id)
 
     def closeEvent(self, event: QCloseEvent | None) -> None:
-        self.closed.emit(self._map_id, self.checkpoint())
+        self.closed.emit(self._map_id)
         super().closeEvent(event)
 
     def _default_size(self) -> tuple[int, int]:

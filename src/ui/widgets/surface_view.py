@@ -10,15 +10,7 @@ from PyQt6.QtCore import QEvent, QObject, QPointF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QFontMetrics, QMouseEvent, QPainter, QResizeEvent, QTransform, QVector3D
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from src.ui.value_colors import NON_FINITE_RGB, VALUE_STOPS
-
-
-def hint_icon(text: str) -> QLabel:
-    """Значок ⓘ с подсказкой при наведении."""
-    label = QLabel("ⓘ")
-    label.setToolTip(text)
-    label.setStyleSheet("color: #888; font-size: 15px;")
-    return label
+from src.ui.style import BACKGROUND, NON_FINITE_RGBA, VALUE_COLORMAP, hint_icon
 
 # Размер сцены: оси X/Y нормируются в [0, SIZE_XY], значения — в [0, SIZE_Z]
 SIZE_XY = 10.0
@@ -26,7 +18,6 @@ SIZE_Z = 5.0
 # Радиус сферы, которая должна целиком влезать в кадр (сцена + подписи)
 SCENE_RADIUS = 7.5
 
-BACKGROUND = "#f7f7f5"
 MESH_LINE_RGBA = (0.15, 0.15, 0.15, 0.75)
 MESH_LINE_WIDTH = 2.0
 FLOOR_GRID_RGBA = (0, 0, 0, 90)
@@ -52,12 +43,6 @@ PICK_OVERLAP_PX = 3
 AXIS_LABEL_WORLD_PER_PX = 0.03
 # Зазор между названием оси и диапазоном (две строки в одной точке), в пикселях шрифта
 AXIS_LABEL_LINE_GAP_PX = 2
-
-# Ячейки с inf/nan (деление на ноль в scaling) — серые и лежат на уровне минимума
-NON_FINITE_RGBA = tuple(c / 255 for c in NON_FINITE_RGB) + (1.0,)
-
-# Шкала синий (мин) → красный (макс), общая с таблицей и 2D-графиком
-VALUE_COLORMAP = pg.ColorMap(pos=[p for p, _ in VALUE_STOPS], color=[c for _, c in VALUE_STOPS])
 
 # Подсветка выделения рисуется поверх меша, без теста глубины
 _OVERLAY_GL_OPTIONS = {
@@ -388,7 +373,7 @@ class SurfaceView(QWidget):
         x_title: str = "",
         y_title: str = "",
     ) -> None:
-        """values[row][col]: row — ось Y, col — ось X (как в TableEditor).
+        """values[row][col]: row — ось Y, col — ось X (как в таблице карты).
 
         x_labels / y_labels — подписи статических осей для надписей сцены.
         """

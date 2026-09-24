@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
+from src.core.ecu_lookup import has_denso_lookup
 from src.core.models import AxisDef, CalibrationTable, MapInfo, RomDefinition, TableDef
 from src.core.rom_io import (
     axis_title,
@@ -34,6 +35,8 @@ class EcuParser:
         self.definition: RomDefinition | None = definition
         self.defs_repo = defs_repo
         self._axis_users: dict[int, list[str]] | None = None
+        # Проверяется по коду прошивки один раз: код при правках карт не меняется
+        self._ecu_interpolation: bool | None = None
 
     @classmethod
     def open_rom(
@@ -90,6 +93,13 @@ class EcuParser:
             )
         maps.sort(key=lambda m: (m.category, m.name))
         return maps
+
+    @property
+    def ecu_interpolation(self) -> bool:
+        """В прошивке тот же код чтения карт, что разобран в core.ecu_lookup (SH7055/SH7058)."""
+        if self._ecu_interpolation is None:
+            self._ecu_interpolation = has_denso_lookup(self.rom_bytes)
+        return self._ecu_interpolation
 
     def axis_users(self) -> dict[int, list[str]]:
         """Адрес оси в ROM → редактируемые таблицы, которые её используют."""
@@ -184,6 +194,8 @@ class EcuParser:
             coarse_increment=scaling.coarse_increment if scaling else None,
             x_increments=_axis_increments(table.x_axis),
             y_increments=_axis_increments(table.y_axis),
+            scaling=scaling,
+            ecu_interpolation=self.ecu_interpolation,
         )
 
 

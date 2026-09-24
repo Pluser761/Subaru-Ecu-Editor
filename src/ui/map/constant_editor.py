@@ -6,10 +6,10 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
 
-from src.ui.widgets.table_editor import (
+from src.core.checkpoint import diff_sign
+from src.ui.map.cells import (
     CHECKPOINT_BORDER_WIDTH,
     CHECKPOINT_DOWN_COLOR,
-    CHECKPOINT_EPSILON,
     CHECKPOINT_UP_COLOR,
     DecimalInputValidator,
     change_tooltip,
@@ -117,14 +117,12 @@ class ConstantEditor(QWidget):
         self.value_changed.emit(value)
 
     def _update_border(self) -> None:
-        diff = self._value - self._checkpoint
-        if self._value == self._checkpoint or (
-            math.isfinite(diff) and abs(diff) < CHECKPOINT_EPSILON
-        ):
+        diff = diff_sign(self._value, self._checkpoint)
+        if diff == 0:
             self._input.setStyleSheet("")
             self._input.setToolTip("")
             return
-        color = CHECKPOINT_UP_COLOR if self._value > self._checkpoint else CHECKPOINT_DOWN_COLOR
+        color = CHECKPOINT_UP_COLOR if diff > 0 else CHECKPOINT_DOWN_COLOR
         self._input.setStyleSheet(
             f"QLineEdit {{ border: {CHECKPOINT_BORDER_WIDTH}px solid {color.name()}; padding: 2px; }}"
         )

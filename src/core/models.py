@@ -27,6 +27,10 @@ class CalibrationTable(BaseModel):
     # Шаги осей (из scaling оси): (мелкий, крупный); None — ось не из ROM или шаги не заданы
     x_increments: tuple[float | None, float | None] | None = None
     y_increments: tuple[float | None, float | None] | None = None
+    # Формула пересчёта значений; ЭБУ интерполирует сырые числа (см. core.ecu_lookup)
+    scaling: Scaling | None = None
+    # В прошивке подтверждён код чтения карт ЭБУ — сравнивать по его расчёту
+    ecu_interpolation: bool = False
 
     @property
     def rows(self) -> int:

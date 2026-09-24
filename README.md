@@ -91,8 +91,13 @@ python main.py
     checkpoint и изменение — «Checkpoint: 1600.00 / Изменение: +50.00 (+3.1%)»;
     у ячеек без изменений подсказки нет;
   - сравнение с checkpoint учитывает оси: если точку оси сдвинули, ячейка сравнивается
-    со значением старой карты в новой точке (билинейная интерполяция по осям checkpoint,
-    за краями — крайние значения, как у ЭБУ), а не со старым числом в той же клетке.
+    с тем, что ЭБУ прочитал бы из старой карты в новой точке, а не со старым числом в той
+    же клетке. Расчёт — дословно как в коде ЭБУ (разобран в AZ1G301F, `core/ecu_lookup.py`):
+    линейно по X, затем по Y; за краями оси — крайнее значение; повтор точки оси — ступенька;
+    интерполируются сырые числа, поэтому в картах с нелинейной формулой (AFR) результат
+    отличается от линейного смешивания AFR. Этот код найден во всех 32-битных прошивках
+    SH7055/SH7058 архива RomRaider (411 шт.); для остальных (16-битные, FA20DIT) — линейная
+    интерполяция физических значений.
     Сдвиг оси 122 → 113 °F между 1500 и 1300 RPM: «было» = 1400, ячейка 1300 — синяя,
     в подсказке «Checkpoint: 1400.00 (по осям checkpoint; в ячейке было 1300.00)»;
   - правка значений осей двойным кликом по заголовку;
@@ -196,51 +201,62 @@ Checkpoint и несохранённые правки ROM между запус�
 ```
 main.py                      точка входа: QApplication + MainWindow + MainPresenter
 definitions/ecu_defs.xml     RomRaider definitions (v0.8.3.1b, ~670 <rom>, из них ~330 child)
+tests/                       pytest: ядро, модель таблицы, сессия (на прошивках из ecu/, если есть)
 src/
   core/                      логика без Qt
     models.py                pydantic-модели: TableDef, AxisDef, Scaling, RomId, RomDefinition,
-                             CalibrationTable, MapInfo
+                             CalibrationTable, MapInfo, Checkpoint
     xml_reader.py            разбор ecu_defs.xml, EcuDefsRepository: match / resolve / identify
-    rom_io.py                чтение сырых значений из байтов, размеры таблиц, применение scaling
+    rom_io.py                чтение/запись значений в байтах ROM, размеры таблиц, scaling
     scaling.py               безопасное вычисление scaling-выражений через ast
-    parser.py                EcuParser — ROM + resolved definition: list_maps, load_table
+    parser.py                EcuParser — ROM + resolved definition: list_maps, load_table, общие оси
+    session.py               RomSession — сессия открытого ROM: checkpoint всех карт, изменённые
+                             карты, сценарии записи ячейки/оси (с общими осями) и переноса
+    checkpoint.py            сравнение с checkpoint (с интерполяцией на сдвинутые оси)
+    ecu_lookup.py            чтение карты как у ЭБУ Denso SH7055/SH7058 (сравнение с checkpoint)
+    interpolation.py         линейная интерполяция физических значений (перенос; прошивки без кода ЭБУ)
     transfer.py              перенос карт B → A: совместимость, план, интерполяция, отчёт
-    interpolation.py         билинейная интерполяция таблицы по осям (перенос, checkpoint)
     matrix_clipboard.py      форматирование/парсинг матриц и осей для буфера обмена, валидация
     checksum.py              пусто (заготовка под контрольные суммы)
   presenters/
-    main_presenter.py        MVP-презентер: связывает окно и EcuParser, обрабатывает сигналы
+    main_presenter.py        MVP-презентер: событие окна → сценарий RomSession → показать результат
   ui/
     main_window.py           главное окно: меню File/View, QStackedWidget (Editor | Tools), статусбар
     editor_view.py           дерево карт + открытые окна карт + окно графика за активной картой
-    map_window.py            окно одной карты: TableEditor / ConstantEditor, шаги, checkpoint,
-                             режимы показа (таблица, 2D строкой, константа)
     graph_window.py          отдельное окно графика: SurfaceView (3D) или CurveView (2D)
-    value_colors.py          цветовая шкала значений (таблица, меш, 2D-график)
-    widgets/constant_editor.py поле ввода константы (1×1) в белой рамке, рамка checkpoint
-    widgets/table_editor.py  QTableWidget с редактируемыми заголовками-осями и copy/paste
+    map/                     окно карты
+      window.py              MapWindow: режимы показа (таблица, 2D строкой, константа), шаги,
+                             пересчёт экранных координат в координаты ROM
+      model.py               MapTableModel: числа карты, оси, checkpoint, шкала цвета — без виджетов
+      view.py                MapTableView (QTableView): выделение, шаг клавишами, буфер обмена
+      header.py              заголовки осей: правка, Ctrl+клик по точке оси, copy/paste оси
+      delegate.py            ячейка: фон по значению, рамка checkpoint, подсказка, ввод
+      cells.py               формат чисел, валидатор ввода, цвета и рамка checkpoint
+      constant_editor.py     поле ввода константы (1×1) в белой рамке
+    value_colors.py          цветовая шкала значений (таблица, дерево, графики)
+    style.py                 общий вид графиков: фон, шкала pyqtgraph, значок ⓘ
+    widgets/surface_view.py  3D-вид таблицы на pyqtgraph.opengl (меш, подсветка выделения)
+    widgets/curve_view.py    2D-график вектора на pyqtgraph (точки, выделение, клик по точке)
     widgets/step_controls.py поля мелкого/крупного шага (из definition таблицы)
     widgets/vertical_label.py повёрнутый текст — заголовок оси строк
     widgets/key_capture.py   кнопка захвата клавиши для назначения привязки
+    widgets/status_line.py   строка статуса (инфо / ошибка)
     key_bindings.py          KeyBindings: действия ↔ клавиши, сопоставление нажатий
-    app_settings.py          AppSettings: чтение/запись settings.ini (клавиши, последний ROM,
-                             окно графика)
+    app_settings.py          AppSettings: чтение/запись settings.ini
     transfer_dialog.py       выбор таблиц для переноса и окно отчёта
     settings_dialog.py       окно настроек (привязка клавиш, применяется по OK)
-    widgets/surface_view.py  3D-вид таблицы на pyqtgraph.opengl (меш, подсветка выделения)
-    widgets/curve_view.py    2D-график вектора на pyqtgraph (точки, выделение, клик по точке)
-    widgets/status_line.py   строка статуса (инфо / ошибка)
 ```
 
 ### Архитектура
 
-Используется MVP:
+MVP со слоем сценариев и Qt Model/View для таблиц:
 
-- **View** (`src/ui`) — только виджеты и Qt-сигналы, бизнес-логики нет.
-- **Presenter** (`MainPresenter`) — подписывается на сигналы view и колбэки
-  `MainWindow.on_*`, вызывает модель, обновляет статус.
-- **Model** (`src/core`) — чистый Python + pydantic, от Qt не зависит, можно
-  тестировать отдельно.
+- **Ядро** (`src/core`) — чистый Python + pydantic + numpy, от Qt не зависит, покрыто тестами.
+  `RomSession` — сценарии над открытым ROM и всё его состояние (checkpoint, изменённые карты).
+- **Presenter** (`MainPresenter`) — тонкая связка: подключается к окнам карт при их открытии
+  (`EditorView.map_opened`), вызывает сценарии `RomSession`, показывает результат.
+- **View** (`src/ui`) — виджеты и Qt-сигналы. Таблица карты — `MapTableModel` (числа, а не
+  текст в ячейках) + `MapTableView` + делегат и заголовки.
 
 ### Как открывается ROM
 
@@ -267,7 +283,6 @@ src/
 - Таблицы типа `Switch` не показываются; 1D всегда читаются как одно значение (1×1).
 - При нескольких совпадениях definition берётся первое.
 - Поле `format` из scaling игнорируется — всегда 2 знака после точки.
-- Тестов пока нет; `mypy` есть в зависимостях.
 
 ## Предупреждение
 

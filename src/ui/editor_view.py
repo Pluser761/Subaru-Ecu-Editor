@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QHeaderView, QLabel, QTreeWidget, QTree
 from src.core.models import CalibrationTable, Checkpoint, MapInfo
 from src.ui.graph_window import GraphKind, GraphWindow
 from src.ui.key_bindings import PHYSICAL_CONTROL, KeyBindings
-from src.ui.map_window import MapWindow, dimension_label
+from src.ui.map.window import MapWindow, dimension_label
 from src.ui.value_colors import cell_background
 
 # Новые окна карт — лесенкой от правого края главного окна
@@ -36,25 +36,18 @@ class EditorView(QWidget):
     """Раздел Editor: дерево карт; каждая открытая карта — отдельное окно (MapWindow),
     одно окно графика следует за активной картой.
 
-    Сигналы правок и методы update_* / checkpoint — с map_id и в координатах карты в ROM.
+    Правки приходят от самих окон карт (map_opened — подключиться к новому окну);
+    методы update_* / checkpoint — с map_id и в координатах карты в ROM.
     """
 
     # Открыть карту (клик или Enter в дереве)
     map_selected = pyqtSignal(str)
     # Окно графика закрыто пользователем — автопоказ выключен
     graph_closed = pyqtSignal()
-    # Правки в координатах карты в ROM
-    cell_value_changed = pyqtSignal(str, int, int, float)  # map_id, row, col, value
-    x_axis_changed = pyqtSignal(str, int, float)  # map_id, col, value
-    y_axis_changed = pyqtSignal(str, int, float)  # map_id, row, value
-    # Окно карты закрыто — его checkpoint должен пережить закрытие
-    map_closed = pyqtSignal(str, object)  # map_id, Checkpoint
+    # Открыто окно карты — презентер подключается к его сигналам правок напрямую
+    map_opened = pyqtSignal(object)  # MapWindow
+    # Сообщения самого дерева («Карта не открыта»)
     operation_info = pyqtSignal(str)
-    operation_error = pyqtSignal(str)
-    matrix_copied = pyqtSignal(int, int)
-    matrix_pasted = pyqtSignal(int, int)
-    # В окне карты нажали Set checkpoint
-    checkpoint_set = pyqtSignal(str)
 
     def __init__(self, key_bindings: KeyBindings | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -168,17 +161,10 @@ class EditorView(QWidget):
         window = MapWindow(table, checkpoint, self._key_bindings, self)
         map_id = window.map_id
         self._windows[map_id] = window
-        window.cell_value_changed.connect(self.cell_value_changed.emit)
-        window.x_axis_changed.connect(self.x_axis_changed.emit)
-        window.y_axis_changed.connect(self.y_axis_changed.emit)
-        window.operation_info.connect(self.operation_info.emit)
-        window.operation_error.connect(self.operation_error.emit)
-        window.matrix_copied.connect(self.matrix_copied.emit)
-        window.matrix_pasted.connect(self.matrix_pasted.emit)
         window.activated.connect(self._set_current)
         window.display_changed.connect(self._on_display_changed)
         window.closed.connect(self._on_window_closed)
-        window.checkpoint_set.connect(self.checkpoint_set.emit)
+        self.map_opened.emit(window)
         window.move(self._next_window_position(window))
         self._show(window)
         self._set_current(map_id)
@@ -260,7 +246,7 @@ class EditorView(QWidget):
             self._current = map_id
             self._refresh_graph()
 
-    def _on_window_closed(self, map_id: str, checkpoint: Checkpoint) -> None:
+    def _on_window_closed(self, map_id: str) -> None:
         self._windows.pop(map_id, None)
         if map_id in self._activation_order:
             self._activation_order.remove(map_id)
@@ -269,7 +255,6 @@ class EditorView(QWidget):
             self._refresh_graph()
         if not self._windows:
             self._cascade = 0
-        self.map_closed.emit(map_id, checkpoint)
 
     def _on_display_changed(self, map_id: str) -> None:
         if map_id == self._current:
