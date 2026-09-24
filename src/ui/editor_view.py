@@ -1,192 +1,102 @@
 from __future__ import annotations
 
-from enum import Enum
-
-from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QKeyEvent
-from PyQt6.QtWidgets import (
-    QWidget,
-    QHBoxLayout,
-    QVBoxLayout,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QLabel,
-    QSplitter,
-    QFrame,
-    QGridLayout,
-    QPushButton,
-    QStackedWidget,
-    QTableWidgetSelectionRange,
-)
+from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QGuiApplication, QKeyEvent
+from PyQt6.QtWidgets import QHBoxLayout, QHeaderView, QLabel, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
 from src.core.models import CalibrationTable, Checkpoint, MapInfo
 from src.ui.graph_window import GraphKind, GraphWindow
-from src.ui.key_bindings import Action, KeyBindings, is_fine_modifier
-from src.ui.widgets.constant_editor import ConstantEditor
-from src.ui.widgets.step_controls import StepControls
-from src.ui.widgets.table_editor import TableEditor
-from src.ui.widgets.vertical_label import VerticalLabel
+from src.ui.key_bindings import PHYSICAL_CONTROL, KeyBindings
+from src.ui.map_window import MapWindow, dimension_label
+from src.ui.value_colors import cell_background
+
+# Новые окна карт — лесенкой от правого края главного окна
+CASCADE_STEP = 28
+CASCADE_MAX = 10
+DIMENSION_COLOR = QColor("#888888")
+# Отметка карты, изменённой относительно checkpoint
+CHANGED_MARK = "●"
+CHANGED_COLOR = QColor("#c05000")
+# Фон строки карты по уровню (userlevel 1…5): шкала синий → красный, бледнее, чем в ячейках
+LEVEL_COLOR_STRENGTH = 0.28
+LEVELS = {
+    1: "основные таблицы",
+    2: "дополнительные",
+    3: "продвинутые",
+    4: "экспертные",
+    5: "служебные, отладка",
+}
 
 
-# Нет ограничения высоты виджета (QWIDGETSIZE_MAX)
-_NO_MAX_HEIGHT = 16777215
-
-
-class _Mode(Enum):
-    """Как показана карта."""
-
-    TABLE = "table"  # как в ROM: строки — ось Y, столбцы — ось X
-    ROW = "row"  # 2D-вектор, хранящийся столбцом (N×1), показан одной строкой (1×N)
-    CONSTANT = "constant"  # 1×1 — поле ввода вместо таблицы
+def level_color(level: int) -> QColor:
+    return cell_background((level - 1) / (len(LEVELS) - 1), LEVEL_COLOR_STRENGTH)
 
 
 class EditorView(QWidget):
-    """Раздел Editor: дерево карт + таблица + краткая информация; график — в отдельном окне.
+    """Раздел Editor: дерево карт; каждая открытая карта — отдельное окно (MapWindow),
+    одно окно графика следует за активной картой.
 
-    Сигналы правок и методы update_* / checkpoint_* — в координатах карты в ROM
-    (row — ось Y, col — ось X), даже если карта показана транспонированной (_Mode.ROW)
-    или полем ввода (_Mode.CONSTANT). Окно графика получает то, что на экране.
+    Сигналы правок и методы update_* / checkpoint — с map_id и в координатах карты в ROM.
     """
 
+    # Открыть карту (клик или Enter в дереве)
     map_selected = pyqtSignal(str)
     # Окно графика закрыто пользователем — автопоказ выключен
     graph_closed = pyqtSignal()
     # Правки в координатах карты в ROM
-    cell_value_changed = pyqtSignal(int, int, float)  # row, col, value
-    x_axis_changed = pyqtSignal(int, float)  # col, value
-    y_axis_changed = pyqtSignal(int, float)  # row, value
+    cell_value_changed = pyqtSignal(str, int, int, float)  # map_id, row, col, value
+    x_axis_changed = pyqtSignal(str, int, float)  # map_id, col, value
+    y_axis_changed = pyqtSignal(str, int, float)  # map_id, row, value
+    # Окно карты закрыто — его checkpoint должен пережить закрытие
+    map_closed = pyqtSignal(str, object)  # map_id, Checkpoint
+    operation_info = pyqtSignal(str)
+    operation_error = pyqtSignal(str)
+    matrix_copied = pyqtSignal(int, int)
+    matrix_pasted = pyqtSignal(int, int)
+    # В окне карты нажали Set checkpoint
+    checkpoint_set = pyqtSignal(str)
 
     def __init__(self, key_bindings: KeyBindings | None = None, parent=None) -> None:
         super().__init__(parent)
         self._key_bindings = key_bindings or KeyBindings(self)
 
         self._map_tree = QTreeWidget()
-        self._map_tree.setHeaderLabel("Maps")
+        self._map_tree.setColumnCount(2)
+        self._map_tree.setHeaderLabels(["Maps", ""])
         self._map_tree.setMinimumWidth(200)
+        tree_header = self._map_tree.header()
+        if tree_header is not None:
+            tree_header.setStretchLastSection(False)
+            tree_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            tree_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self._map_tree.itemClicked.connect(self._on_tree_clicked)
-        # →/← на карте: открыть её / вернуться к категории и свернуть
+        # Enter — открыть карту, Control+Enter — закрыть её окно
         self._map_tree.installEventFilter(self)
+        # Листья дерева по map_id — для отметки изменённых карт
+        self._leaves: dict[str, QTreeWidgetItem] = {}
+        self._changed: set[str] = set()
 
-        self._title = QLabel("Select a map")
-        self._title.setStyleSheet("font-size: 14px; font-weight: 600;")
-
-        self._meta = QLabel("")
-        self._meta.setStyleSheet("color: #666;")
-
-        # Ось, которую используют и другие таблицы: её правка меняет ось и у них
-        self._shared_axes = QLabel("")
-        self._shared_axes.setStyleSheet("color: #b36b00;")
-        self._shared_axes.setVisible(False)
-
-        self._table = TableEditor()
-        self._constant = ConstantEditor()
-        self._steps = StepControls()
-        self._table_name = ""
-        self._table_unit = ""
-        self._mode = _Mode.TABLE
-        # Шаги осей на экране (после транспонирования) и шаги значений, пока выделена ось
-        self._axis_steps: dict[Qt.Orientation, tuple[float | None, float | None] | None] = {}
-        self._value_steps: tuple[float, float] | None = None
-        self._table.axis_selection_changed.connect(self._on_axis_selection_changed)
-        self._table.cell_value_changed.connect(self._on_table_cell_changed)
-        self._table.x_axis_changed.connect(lambda i, v: self._on_table_axis_changed(Qt.Orientation.Horizontal, i, v))
-        self._table.y_axis_changed.connect(lambda i, v: self._on_table_axis_changed(Qt.Orientation.Vertical, i, v))
-        self._constant.value_changed.connect(lambda v: self.cell_value_changed.emit(0, 0, v))
+        # Открытые окна карт; порядок активации — для выбора карты графика после закрытия
+        self._windows: dict[str, MapWindow] = {}
+        self._activation_order: list[str] = []
+        self._current: str | None = None
+        self._cascade = 0
 
         # График текущей карты — отдельное окно: меш для 3D, кривая для 2D, для констант скрыто.
-        # Пока автопоказ включён, окно появляется при выборе карты, у которой есть график
+        # Пока автопоказ включён, окно появляется, когда у текущей карты есть график
         self._graph = GraphWindow(self)
         self._graph_enabled = True
         self._graph.closed_by_user.connect(self._on_graph_closed)
-
-        # Клавиши шага работают, когда в фокусе таблица, её заголовки
-        # (после клика по заголовку фокус у него) или график
-        for widget in (
-            self._table,
-            self._table.horizontalHeader(),
-            self._table.verticalHeader(),
-            self._graph.surface.gl_widget,
-            self._graph.curve.plot_widget,
-            self._constant.input,
-        ):
-            if widget is not None:
-                widget.installEventFilter(self)
-
-        # Заголовки осей: X — над столбцами, Y — вертикально слева от строк
-        self._x_title = QLabel()
-        self._x_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._y_title = VerticalLabel()
-        for title in (self._x_title, self._y_title):
-            title.setStyleSheet("color: #444; font-weight: 600;")
-        self._axis_titles = ("", "")
-
-        # Правки/вставки шлют сигнал на каждую ячейку — схлопываем в одну перерисовку
-        self._graph_timer = QTimer(self)
-        self._graph_timer.setSingleShot(True)
-        self._graph_timer.setInterval(0)
-        self._graph_timer.timeout.connect(self._refresh_graph)
-        self._table.cell_value_changed.connect(self._schedule_graph)
-        self._table.x_axis_changed.connect(self._schedule_graph)
-        self._table.y_axis_changed.connect(self._schedule_graph)
-        self._table.itemSelectionChanged.connect(self._schedule_graph)
         self._graph.surface.point_clicked.connect(self._on_graph_point_clicked)
         self._graph.curve.point_clicked.connect(self._on_graph_point_clicked)
+        # Клавиши шага в окне графика меняют текущую карту
+        for widget in (self._graph.surface.gl_widget, self._graph.curve.plot_widget):
+            widget.installEventFilter(self)
 
-        right = QVBoxLayout()
-        right.setContentsMargins(8, 0, 0, 0)
-        right.addWidget(self._title)
-        right.addWidget(self._meta)
-        right.addWidget(self._shared_axes)
-        checkpoint_btn = QPushButton("Set checkpoint")
-        checkpoint_btn.setToolTip(
-            "Запомнить текущие значения как точку отсчёта. Изменённые после этого ячейки "
-            "обводятся: красным — больше, синим — меньше"
-        )
-        checkpoint_btn.clicked.connect(self._set_checkpoint)
-        edit_row = QHBoxLayout()
-        edit_row.addWidget(self._steps, stretch=1)
-        edit_row.addWidget(checkpoint_btn)
-        right.addLayout(edit_row)
-
-        self._grid_frame = QFrame()
-        self._grid_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        grid_frame_layout = QVBoxLayout(self._grid_frame)
-        grid_frame_layout.setContentsMargins(0, 0, 0, 0)
-        grid_frame_layout.addWidget(self._table)
-
-        table_frame = QWidget()
-        self._table_layout = QGridLayout(table_frame)
-        self._table_layout.setContentsMargins(0, 0, 0, 0)
-        self._table_layout.setSpacing(2)
-        self._table_layout.addWidget(self._x_title, 0, 1)
-        self._table_layout.addWidget(self._y_title, 1, 0)
-        self._table_layout.addWidget(self._grid_frame, 1, 1)
-        self._table_layout.setColumnStretch(1, 1)
-        self._set_compact_table(False)
-
-        # Таблица или поле ввода константы
-        self._pages = QStackedWidget()
-        self._pages.addWidget(table_frame)
-        self._pages.addWidget(self._constant)
-        right.addWidget(self._pages, stretch=1)
-
-        right_widget = QWidget()
-        right_widget.setLayout(right)
-
-        splitter = QSplitter()
-        splitter.addWidget(self._map_tree)
-        splitter.addWidget(right_widget)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([220, 580])
-
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.addWidget(splitter)
-
-    @property
-    def table_editor(self) -> TableEditor:
-        return self._table
+        layout.addWidget(_legend())
+        layout.addWidget(self._map_tree)
 
     @property
     def graph_window(self) -> GraphWindow:
@@ -199,6 +109,8 @@ class EditorView(QWidget):
 
     def set_maps(self, maps: list[MapInfo]) -> None:
         self._map_tree.clear()
+        self._leaves = {}
+        self._changed = set()
         categories: dict[str, QTreeWidgetItem] = {}
         for info in maps:
             if info.category not in categories:
@@ -206,190 +118,174 @@ class EditorView(QWidget):
                 cat_item.setExpanded(True)
                 self._map_tree.addTopLevelItem(cat_item)
                 categories[info.category] = cat_item
-            leaf = QTreeWidgetItem([info.name])
+            leaf = QTreeWidgetItem([info.name, dimension_label(info.rows, info.cols)])
             leaf.setData(0, int(Qt.ItemDataRole.UserRole), info.id)
+            leaf.setForeground(1, DIMENSION_COLOR)
+            leaf.setTextAlignment(1, int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
+            if info.userlevel in LEVELS:
+                brush = QBrush(level_color(info.userlevel))
+                leaf.setBackground(0, brush)
+                leaf.setBackground(1, brush)
+                leaf.setToolTip(0, f"Уровень {info.userlevel} — {LEVELS[info.userlevel]}")
             categories[info.category].addChild(leaf)
+            self._leaves[info.id] = leaf
 
-    def update_cell(self, row: int, col: int, value: float) -> None:
+    def set_changed_maps(self, changed: set[str]) -> None:
+        """Отметить в дереве карты, изменённые относительно своего checkpoint: жирное имя
+        и ● перед размерностью; категория с такими картами — тоже жирная."""
+        if changed == self._changed:
+            return
+        self._changed = set(changed)
+        categories: set[int] = set()
+        for map_id, leaf in self._leaves.items():
+            is_changed = map_id in changed
+            font = leaf.font(0)
+            font.setBold(is_changed)
+            leaf.setFont(0, font)
+            dim = leaf.text(1).removeprefix(CHANGED_MARK).strip()
+            leaf.setText(1, f"{CHANGED_MARK} {dim}" if is_changed else dim)
+            leaf.setForeground(1, CHANGED_COLOR if is_changed else DIMENSION_COLOR)
+            parent = leaf.parent()
+            if is_changed and parent is not None:
+                categories.add(id(parent))
+        for i in range(self._map_tree.topLevelItemCount()):
+            category = self._map_tree.topLevelItem(i)
+            if category is not None:
+                font = category.font(0)
+                font.setBold(id(category) in categories)
+                category.setFont(0, font)
+
+    # --- Окна карт ---
+
+    def has_map(self, map_id: str) -> bool:
+        return map_id in self._windows
+
+    def open_maps(self) -> list[str]:
+        return list(self._windows)
+
+    def open_map(self, table: CalibrationTable, checkpoint: Checkpoint | None) -> None:
+        """Открыть окно карты поверх остальных, не забирая фокус у дерева."""
+        window = MapWindow(table, checkpoint, self._key_bindings, self)
+        map_id = window.map_id
+        self._windows[map_id] = window
+        window.cell_value_changed.connect(self.cell_value_changed.emit)
+        window.x_axis_changed.connect(self.x_axis_changed.emit)
+        window.y_axis_changed.connect(self.y_axis_changed.emit)
+        window.operation_info.connect(self.operation_info.emit)
+        window.operation_error.connect(self.operation_error.emit)
+        window.matrix_copied.connect(self.matrix_copied.emit)
+        window.matrix_pasted.connect(self.matrix_pasted.emit)
+        window.activated.connect(self._set_current)
+        window.display_changed.connect(self._on_display_changed)
+        window.closed.connect(self._on_window_closed)
+        window.checkpoint_set.connect(self.checkpoint_set.emit)
+        window.move(self._next_window_position(window))
+        self._show(window)
+        self._set_current(map_id)
+
+    def raise_map(self, map_id: str) -> None:
+        """Поднять уже открытое окно карты поверх остальных, не забирая фокус."""
+        window = self._windows.get(map_id)
+        if window is None:
+            return
+        self._show(window)
+        self._set_current(map_id)
+
+    def close_map(self, map_id: str) -> bool:
+        """Закрыть окно карты; False — оно не открыто."""
+        window = self._windows.get(map_id)
+        if window is None:
+            return False
+        window.close()
+        return True
+
+    def reload_map(self, table: CalibrationTable, checkpoint: Checkpoint | None) -> None:
+        """Показать перечитанную карту в уже открытом окне (после переноса карт)."""
+        window = self._windows.get(table.name)
+        if window is not None:
+            window.show_table(table, checkpoint)
+
+    def close_all_maps(self) -> None:
+        for window in list(self._windows.values()):
+            window.close()
+
+    def update_cell(self, map_id: str, row: int, col: int, value: float) -> None:
         """Показать значение, реально сохранённое в ROM (без повторной записи)."""
-        if self._mode is _Mode.CONSTANT:
-            self._constant.set_display(value)
+        window = self._windows.get(map_id)
+        if window is not None:
+            window.update_cell(row, col, value)
+
+    def update_axis(self, map_id: str, orientation: Qt.Orientation, index: int, value: float) -> None:
+        """Показать значение оси карты; orientation — ось в ROM (Horizontal — X, Vertical — Y)."""
+        window = self._windows.get(map_id)
+        if window is not None:
+            window.update_axis(orientation, index, value)
+
+    def checkpoint(self, map_id: str) -> Checkpoint | None:
+        window = self._windows.get(map_id)
+        return window.checkpoint() if window is not None else None
+
+    # --- Внутреннее ---
+
+    @staticmethod
+    def _show(window: MapWindow) -> None:
+        # Без активации: фокус остаётся в дереве (листать и открывать дальше), а macOS не
+        # пишет в лог TSMSendMessageToUIServer, как при программной активации окна с полями ввода
+        window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        window.show()
+        window.raise_()
+
+    def _next_window_position(self, window: QWidget) -> QPoint:
+        """Лесенкой от правого края главного окна, но целиком на экране главного окна."""
+        main = self.window()
+        origin = main.frameGeometry().topRight() + QPoint(12, 0) if main is not None else QPoint(120, 80)
+        offset = CASCADE_STEP * (self._cascade % CASCADE_MAX)
+        self._cascade += 1
+        pos = origin + QPoint(offset, offset)
+        screen = (main.screen() if main is not None else None) or QGuiApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            size = window.frameGeometry().size()
+            pos.setX(max(area.left(), min(pos.x(), area.right() - size.width())))
+            pos.setY(max(area.top(), min(pos.y(), area.bottom() - size.height())))
+        return pos
+
+    def _set_current(self, map_id: str) -> None:
+        if map_id not in self._windows:
             return
-        if self._mode is _Mode.ROW:
-            row, col = col, row
-        self._table.set_cell_display(row, col, value)
-        self._schedule_graph()
+        if map_id in self._activation_order:
+            self._activation_order.remove(map_id)
+        self._activation_order.append(map_id)
+        if self._current != map_id:
+            self._current = map_id
+            self._refresh_graph()
 
-    def update_axis(self, orientation: Qt.Orientation, index: int, value: float) -> None:
-        self._table.set_axis_display(self._display_orientation(orientation), index, value)
-        self._schedule_graph()
+    def _on_window_closed(self, map_id: str, checkpoint: Checkpoint) -> None:
+        self._windows.pop(map_id, None)
+        if map_id in self._activation_order:
+            self._activation_order.remove(map_id)
+        if self._current == map_id:
+            self._current = self._activation_order[-1] if self._activation_order else None
+            self._refresh_graph()
+        if not self._windows:
+            self._cascade = 0
+        self.map_closed.emit(map_id, checkpoint)
 
-    def checkpoint(self) -> Checkpoint:
-        """Checkpoint показанной карты (значения и оси) в координатах ROM."""
-        if self._mode is _Mode.CONSTANT:
-            return Checkpoint(values=[[self._constant.checkpoint_value()]])
-        checkpoint = self._table.checkpoint()
-        return _transpose_checkpoint(checkpoint) if self._mode is _Mode.ROW else checkpoint
-
-    def show_table(self, table: CalibrationTable, checkpoint: Checkpoint | None = None) -> None:
-        self._title.setText(table.name)
-        self._table_name = table.name
-        self._table_unit = table.unit
-        unit = f" · {table.unit}" if table.unit else ""
-        self._meta.setText(f"{table.rows} × {table.cols}{unit}")
-        self._set_shared_axes(table.x_shared_with, table.y_shared_with)
-        self._value_steps = None
-        self._steps.set_axis_mode(False)
-        self._steps.set_increments(table.fine_increment, table.coarse_increment)
-
-        if table.rows == 1 and table.cols == 1:
-            self._mode = _Mode.CONSTANT
-            self._table.set_table(None)
-            self._set_axis_titles("", "")
-            cp = checkpoint.values[0][0] if checkpoint and checkpoint.values and checkpoint.values[0] else None
-            self._constant.set_constant(table.values[0][0], table.unit or "Значение", cp)
-            self._pages.setCurrentWidget(self._constant)
-        else:
-            self._mode = _Mode.ROW if table.cols == 1 else _Mode.TABLE
-            shown = _transpose_table(table) if self._mode is _Mode.ROW else table
-            self._axis_steps = {
-                Qt.Orientation.Horizontal: shown.x_increments,
-                Qt.Orientation.Vertical: shown.y_increments,
-            }
-            self._table.set_table(shown)
-            self._set_axis_titles(shown.x_title, shown.y_title)
-            if checkpoint is not None:
-                self._table.restore_checkpoint(
-                    _transpose_checkpoint(checkpoint) if self._mode is _Mode.ROW else checkpoint
-                )
-            self._pages.setCurrentIndex(0)
-        self._set_compact_table(self._is_single_row())
-        self._refresh_graph()
-
-    def clear_table(self) -> None:
-        self._title.setText("Select a map")
-        self._meta.setText("")
-        self._mode = _Mode.TABLE
-        self._pages.setCurrentIndex(0)
-        self._table.set_table(None)
-        self._set_compact_table(False)
-        self._set_axis_titles("", "")
-        self._set_shared_axes([], [])
-        self._table_name = ""
-        self._table_unit = ""
-        self._graph.clear()
-        self._graph.hide()
-
-    def _on_tree_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
-        map_id = item.data(0, int(Qt.ItemDataRole.UserRole))
-        if map_id:
-            self.map_selected.emit(str(map_id))
-
-    def _display_orientation(self, orientation: Qt.Orientation) -> Qt.Orientation:
-        """Ось карты → заголовок таблицы на экране (в _Mode.ROW оси меняются местами)."""
-        if self._mode is not _Mode.ROW:
-            return orientation
-        if orientation == Qt.Orientation.Horizontal:
-            return Qt.Orientation.Vertical
-        return Qt.Orientation.Horizontal
-
-    def _on_axis_selection_changed(self) -> None:
-        """Выделены точки оси — поля шага показывают шаги этой оси; снято — шаги значений."""
-        orientation = self._table.axis_selection_orientation()
-        if orientation is None:
-            if self._value_steps is not None:
-                self._steps.set_increments(*self._value_steps)
-                self._value_steps = None
-            self._steps.set_axis_mode(False)
-            return
-        if self._value_steps is None:
-            # Запоминаем как есть, с ручными правками пользователя
-            self._value_steps = (self._steps.fine_step, self._steps.coarse_step)
-        fine, coarse = self._axis_steps.get(orientation) or (None, None)
-        self._steps.set_increments(fine, coarse)
-        self._steps.set_axis_mode(True)
-
-    def _on_table_cell_changed(self, row: int, col: int, value: float) -> None:
-        if self._mode is _Mode.ROW:
-            row, col = col, row
-        self.cell_value_changed.emit(row, col, value)
-
-    def _on_table_axis_changed(self, shown: Qt.Orientation, index: int, value: float) -> None:
-        # Та же перестановка осей работает в обе стороны
-        if self._display_orientation(shown) == Qt.Orientation.Horizontal:
-            self.x_axis_changed.emit(index, value)
-        else:
-            self.y_axis_changed.emit(index, value)
-
-    def _is_single_row(self) -> bool:
-        return self._mode is not _Mode.CONSTANT and self._table.rowCount() == 1
-
-    def _set_compact_table(self, compact: bool) -> None:
-        """Одна строка на экране: рамка таблицы по высоте содержимого, ниже — пусто."""
-        self._table_layout.setRowStretch(1, 0 if compact else 1)
-        self._table_layout.setRowStretch(2, 1 if compact else 0)
-        if not compact:
-            self._grid_frame.setMaximumHeight(_NO_MAX_HEIGHT)
-            return
-        header = self._table.horizontalHeader()
-        scroll = self._table.horizontalScrollBar()
-        height = (
-            (header.sizeHint().height() if header is not None else 0)
-            + sum(self._table.rowHeight(r) for r in range(self._table.rowCount()))
-            + 2 * self._table.frameWidth()
-            + 2 * self._grid_frame.frameWidth()
-            + (scroll.sizeHint().height() if scroll is not None and scroll.isVisible() else 0)
-        )
-        self._grid_frame.setMaximumHeight(height)
-
-    def _set_axis_titles(self, x_title: str, y_title: str) -> None:
-        self._x_title.setText(x_title)
-        self._x_title.setVisible(bool(x_title))
-        self._y_title.setText(y_title)
-        self._y_title.setVisible(bool(y_title))
-        self._axis_titles = (x_title, y_title)
-
-    def _set_shared_axes(self, x_shared: list[str], y_shared: list[str]) -> None:
-        parts: list[str] = []
-        tips: list[str] = []
-        for axis, names in (("X", x_shared), ("Y", y_shared)):
-            if names:
-                parts.append(f"ось {axis} — ещё {len(names)} {_tables_word(len(names))}")
-                tips.append(f"Ось {axis} общая с:\n" + "\n".join(f"  • {n}" for n in names))
-        if parts:
-            self._shared_axes.setText("⚠ Общая " + "; ".join(parts))
-            self._shared_axes.setToolTip(
-                "\n\n".join(tips)
-                + "\n\nПравка общей оси меняет её и в этих таблицах; их значения не пересчитываются."
-            )
-        else:
-            self._shared_axes.setText("")
-            self._shared_axes.setToolTip("")
-        self._shared_axes.setVisible(bool(parts))
-
-    def _schedule_graph(self, *_args: object) -> None:
-        self._graph_timer.start()
+    def _on_display_changed(self, map_id: str) -> None:
+        if map_id == self._current:
+            self._refresh_graph()
 
     def _refresh_graph(self) -> None:
+        window = self._windows.get(self._current) if self._current is not None else None
+        data = window.graph_data() if window is not None else None
         kind = GraphKind.NONE
-        if self._table.rowCount() > 0 and self._table.columnCount() > 0:
-            kind = self._graph.set_data(
-                self._table_name,
-                self._table.get_values(),
-                self._table.get_x_axis(),
-                self._table.get_y_axis(),
-                self._table.selected_cells(),
-                x_labels=self._table.axis_labels(Qt.Orientation.Horizontal),
-                y_labels=self._table.axis_labels(Qt.Orientation.Vertical),
-                x_title=self._axis_titles[0],
-                y_title=self._axis_titles[1],
-                unit=self._table_unit,
-            )
+        if data is not None:
+            kind = self._graph.set_data(**data)  # type: ignore[arg-type]
         else:
             self._graph.clear()
         if self._graph_enabled and kind is not GraphKind.NONE:
             if not self._graph.isVisible():
-                self._graph.show()
+                self._graph.show_near(window)
         else:
             self._graph.hide()
 
@@ -397,116 +293,79 @@ class EditorView(QWidget):
         self._graph_enabled = False
         self.graph_closed.emit()
 
-    @property
-    def step_controls(self) -> StepControls:
-        return self._steps
+    def _on_graph_point_clicked(self, row: int, col: int, additive: bool) -> None:
+        window = self._windows.get(self._current) if self._current is not None else None
+        if window is not None:
+            window.select_cell(row, col, additive)
+
+    def _on_tree_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        map_id = _map_id_of(item)
+        if map_id:
+            self.map_selected.emit(map_id)
 
     def eventFilter(self, obj: QObject | None, event: QEvent | None) -> bool:
-        if obj is self._map_tree:
-            if isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
-                return self._handle_tree_key(event)
-            return super().eventFilter(obj, event)
-        if obj is self._table and event is not None and event.type() == QEvent.Type.Resize:
-            if self._is_single_row():
-                # Горизонтальная прокрутка могла появиться или пропасть — подгоняем высоту
-                QTimer.singleShot(0, lambda: self._set_compact_table(self._is_single_row()))
-            return super().eventFilter(obj, event)
         if isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
-            action = self._key_bindings.action_for(event)
-            if action is not None and self._mode is _Mode.CONSTANT:
-                step = self._steps.fine_step if is_fine_modifier(event) else self._steps.coarse_step
-                delta = step if action is Action.INCREASE else -step
-                if self._constant.adjust(delta):
-                    self._table.operation_info.emit(f"{delta:+.2f}")
-                return True
-            if action is not None and self._table.rowCount() > 0:
-                step = self._steps.fine_step if is_fine_modifier(event) else self._steps.coarse_step
-                delta = step if action is Action.INCREASE else -step
-                if self._table.has_axis_selection():
-                    count = self._table.adjust_axis_selection(delta)
-                    if count:
-                        self._table.operation_info.emit(f"{delta:+.2f} → точек оси: {count}")
-                    return True
-                count = self._table.adjust_selected(delta)
-                if count:
-                    self._table.operation_info.emit(f"{delta:+.2f} → ячеек: {count}")
+            if obj is self._map_tree:
+                return self._handle_tree_key(event)
+            # Окно графика: клавиши шага — текущей карте
+            window = self._windows.get(self._current) if self._current is not None else None
+            if window is not None and window.handle_step_key(event):
                 return True
         return super().eventFilter(obj, event)
 
     def _handle_tree_key(self, event: QKeyEvent) -> bool:
-        """→ на карте открывает её, ← на карте сворачивает её категорию.
-
-        На категориях работает стандартное поведение QTreeWidget: → раскрывает, ← сворачивает.
-        """
-        if event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier:
+        """Enter на карте — открыть её окно (фокус остаётся в дереве), Control+Enter — закрыть.
+        Enter на категории — раскрыть/свернуть. Стрелки — стандартное поведение дерева."""
+        if event.key() not in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             return False
         item = self._map_tree.currentItem()
-        category = item.parent() if item is not None else None
-        if item is None or category is None:
+        if item is None:
             return False
-        if event.key() == Qt.Key.Key_Right:
-            self._on_tree_clicked(item, 0)
+        modifiers = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
+        map_id = _map_id_of(item)
+        if map_id is None:
+            if modifiers == Qt.KeyboardModifier.NoModifier:
+                item.setExpanded(not item.isExpanded())
+                return True
+            return False
+        if modifiers == Qt.KeyboardModifier.NoModifier:
+            self.map_selected.emit(map_id)
             return True
-        if event.key() == Qt.Key.Key_Left:
-            self._map_tree.setCurrentItem(category)
-            category.setExpanded(False)
+        if modifiers == PHYSICAL_CONTROL:
+            if not self.close_map(map_id):
+                self.operation_info.emit(f"Карта не открыта: {map_id.strip()}")
             return True
         return False
 
-    def _set_checkpoint(self) -> None:
-        if self._mode is _Mode.CONSTANT:
-            self._constant.set_checkpoint()
-            self._table.operation_info.emit("Checkpoint установлен: подсветка изменений сброшена")
-            return
-        if self._table.rowCount() == 0:
-            return
-        self._table.set_checkpoint()
-        self._table.operation_info.emit("Checkpoint установлен: подсветка изменений сброшена")
 
-    def _on_graph_point_clicked(self, row: int, col: int, additive: bool) -> None:
-        if additive:
-            item = self._table.item(row, col)
-            selected = item is not None and item.isSelected()
-            self._table.setRangeSelected(QTableWidgetSelectionRange(row, col, row, col), not selected)
-        else:
-            self._table.setCurrentCell(row, col)
-        self._table.scrollToItem(self._table.item(row, col))
+def _map_id_of(item: QTreeWidgetItem) -> str | None:
+    """map_id листа дерева; None — это категория."""
+    map_id = item.data(0, int(Qt.ItemDataRole.UserRole))
+    return str(map_id) if map_id else None
 
 
-def _tables_word(n: int) -> str:
-    """Согласование: 1 таблица, 2 таблицы, 5 таблиц."""
-    if n % 10 == 1 and n % 100 != 11:
-        return "таблица"
-    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        return "таблицы"
-    return "таблиц"
-
-
-def _transpose(values: list[list[float]]) -> list[list[float]]:
-    return [list(row) for row in zip(*values, strict=True)] if values else []
-
-
-def _transpose_checkpoint(checkpoint: Checkpoint) -> Checkpoint:
-    """Перестановка осей работает в обе стороны: ROM ↔ экран."""
-    return Checkpoint(
-        values=_transpose(checkpoint.values), x_axis=checkpoint.y_axis, y_axis=checkpoint.x_axis
-    )
-
-
-def _transpose_table(table: CalibrationTable) -> CalibrationTable:
-    """Та же карта с переставленными осями: N×1 → 1×N."""
-    return table.model_copy(
-        update={
-            "values": _transpose(table.values),
-            "x_axis": table.y_axis,
-            "y_axis": table.x_axis,
-            "x_labels": table.y_labels,
-            "y_labels": table.x_labels,
-            "x_title": table.y_title,
-            "y_title": table.x_title,
-            "x_shared_with": table.y_shared_with,
-            "y_shared_with": table.x_shared_with,
-            "x_increments": table.y_increments,
-            "y_increments": table.x_increments,
-        }
-    )
+def _legend() -> QWidget:
+    """Строка над деревом: цвета уровней 1…5 и отметка изменённой карты (подсказки при наведении)."""
+    legend = QWidget()
+    row = QHBoxLayout(legend)
+    row.setContentsMargins(2, 0, 2, 2)
+    row.setSpacing(3)
+    caption = QLabel("Уровень")
+    caption.setStyleSheet("color: #666;")
+    caption.setToolTip("Уровень таблицы из RomRaider definitions (userlevel): 1 — основные … 5 — служебные")
+    row.addWidget(caption)
+    for level, name in LEVELS.items():
+        chip = QLabel(str(level))
+        chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        chip.setFixedSize(22, 18)
+        chip.setStyleSheet(
+            f"background: {level_color(level).name()}; border: 1px solid #bbb; border-radius: 3px; color: #333;"
+        )
+        chip.setToolTip(f"Уровень {level} — {name}")
+        row.addWidget(chip)
+    row.addStretch(1)
+    changed = QLabel(f"{CHANGED_MARK} изменена")
+    changed.setStyleSheet(f"color: {CHANGED_COLOR.name()};")
+    changed.setToolTip("Жирная карта с ● — значения или оси отличаются от её checkpoint")
+    row.addWidget(changed)
+    return legend

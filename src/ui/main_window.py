@@ -27,7 +27,8 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Subaru ECU Editor")
-        self.setGeometry(100, 100, 1100, 700)
+        # Главное окно — только дерево карт; карты и график открываются отдельными окнами
+        self.setGeometry(100, 100, 380, 720)
 
         # Настройки живут в памяти процесса (без сохранения между запусками)
         self.key_bindings = KeyBindings(self)
@@ -124,6 +125,7 @@ class MainWindow(QMainWindow):
             self.on_close()
         # hide, а не close: закрытие окна графика пользователем выключает его автопоказ
         self.editor_view.graph_window.hide()
+        self.editor_view.close_all_maps()
         super().closeEvent(event)
 
     def show_settings(self) -> None:

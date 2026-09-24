@@ -85,6 +85,7 @@ class EcuParser:
                     cols=cols,
                     unit=unit,
                     table_type=table.table_type,
+                    userlevel=table.userlevel,
                 )
             )
         maps.sort(key=lambda m: (m.category, m.name))
@@ -107,12 +108,25 @@ class EcuParser:
 
     def shared_axis_tables(self, map_id: str, axis: str) -> list[str]:
         """Другие таблицы на той же оси в ROM (axis: "x" или "y"); пусто — ось не общая."""
+        return [name for name, _ in self.shared_axis_users(map_id, axis)]
+
+    def shared_axis_users(self, map_id: str, axis: str) -> list[tuple[str, str]]:
+        """Другие таблицы на той же оси в ROM и какая это ось у них: [(имя, "x" | "y")].
+        Одна ось бывает X у одних таблиц и Y у других (ECT: Y у 2D, X у 3D)."""
         table = self.get_table_def(map_id)
         axis_def = table.x_axis if axis == "x" else table.y_axis
         if not is_writable_axis(axis_def):
             return []
         assert axis_def is not None and axis_def.storageaddress is not None
-        return [name for name in self.axis_users().get(axis_def.storageaddress, []) if name != map_id]
+        address = axis_def.storageaddress
+        users: list[tuple[str, str]] = []
+        for name in self.axis_users().get(address, []):
+            if name == map_id:
+                continue
+            other = self.get_table_def(name)
+            kind = "x" if other.x_axis is not None and other.x_axis.storageaddress == address else "y"
+            users.append((name, kind))
+        return users
 
     def get_table_def(self, map_id: str) -> TableDef:
         if self.definition is None:

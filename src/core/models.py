@@ -55,6 +55,7 @@ class MapInfo(BaseModel):
     cols: int
     unit: str = ""
     table_type: str = "3D"
+    userlevel: int | None = None
 
 
 class Scaling(BaseModel):
@@ -90,6 +91,8 @@ class TableDef(BaseModel):
     x_axis: AxisDef | None = None
     y_axis: AxisDef | None = None
     description: str = ""
+    # Уровень из RomRaider definitions: 1 — основные таблицы … 5 — служебные; None — не задан
+    userlevel: int | None = None
 
 
 class RomId(BaseModel):

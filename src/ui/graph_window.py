@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from enum import Enum
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QCloseEvent
+from PyQt6.QtCore import QPoint, Qt, pyqtSignal
+from PyQt6.QtGui import QCloseEvent, QGuiApplication
 from PyQt6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
 
 from src.ui.widgets.curve_view import CurveView
 from src.ui.widgets.surface_view import SurfaceView
+
+
+# Размер окна при первом показе (меньше окна карты), зазор до окна карты
+DEFAULT_SIZE = (460, 440)
+WINDOW_GAP = 8
+TITLE_BAR_ALLOWANCE = 32
 
 
 class GraphKind(Enum):
@@ -34,9 +40,11 @@ class GraphWindow(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self.setWindowTitle("График")
-        self.resize(720, 540)
+        self.resize(*DEFAULT_SIZE)
         # Показ при выборе карты не должен уводить фокус из дерева или таблицы
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        # Уже показывали в этой сессии — дальше окно стоит там, куда его поставил пользователь
+        self._placed = False
 
         # Имя показанной карты: при смене карты масштаб 2D-графика сбрасывается
         self._name = ""
@@ -95,6 +103,29 @@ class GraphWindow(QWidget):
         self.setWindowTitle("График")
         self.surface.clear()
         self.curve.clear()
+
+    def show_near(self, anchor: QWidget | None) -> None:
+        """Показать. В первый раз за сессию — под окном карты anchor (не хватает места снизу —
+        справа от него), целиком на экране; потом окно стоит там, куда его передвинули."""
+        if not self._placed and anchor is not None:
+            self.move(self._position_near(anchor))
+            self._placed = True
+        self.show()
+
+    def _position_near(self, anchor: QWidget) -> QPoint:
+        target = anchor.frameGeometry()
+        screen = anchor.screen() or QGuiApplication.primaryScreen()
+        # До первого показа frameGeometry без рамки ОС — берём с запасом на заголовок
+        width, height = self.width(), self.height() + TITLE_BAR_ALLOWANCE
+        pos = QPoint(target.left(), target.bottom() + WINDOW_GAP)
+        if screen is None:
+            return pos
+        area = screen.availableGeometry()
+        if pos.y() + height > area.bottom():
+            pos = QPoint(target.right() + WINDOW_GAP, target.top())
+        pos.setX(max(area.left(), min(pos.x(), area.right() - width)))
+        pos.setY(max(area.top(), min(pos.y(), area.bottom() - height)))
+        return pos
 
     def closeEvent(self, a0: QCloseEvent | None) -> None:
         self.closed_by_user.emit()

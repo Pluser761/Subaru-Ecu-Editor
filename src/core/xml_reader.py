@@ -120,6 +120,7 @@ def _parse_table(el: ET.Element) -> TableDef:
         x_axis=x_axis,
         y_axis=y_axis,
         description=_text(el.find("description")),
+        userlevel=int(el.attrib["userlevel"]) if el.attrib.get("userlevel", "").isdigit() else None,
     )
 
 
@@ -193,6 +194,7 @@ def _merge_table(base: TableDef, overlay: TableDef) -> TableDef:
         x_axis=_merge_axis(base.x_axis, overlay.x_axis),
         y_axis=_merge_axis(base.y_axis, overlay.y_axis),
         description=overlay.description or base.description,
+        userlevel=overlay.userlevel if overlay.userlevel is not None else base.userlevel,
     )
 
 

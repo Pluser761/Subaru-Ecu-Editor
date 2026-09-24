@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QByteArray, QSettings
+from PyQt6.QtCore import QSettings, QSize
 from PyQt6.QtGui import QKeySequence
 
 from src.ui.key_bindings import DEFAULT_KEYS, MODIFIER_KEYS, Action
@@ -11,7 +11,9 @@ SETTINGS_APP = "settings"
 _KEY_PREFIX = "keys/"
 _LAST_ROM = "session/last_rom"
 _GRAPH_ENABLED = "graph/enabled"
-_GRAPH_GEOMETRY = "graph/geometry"
+_GRAPH_SIZE = "graph/size"
+# Старый ключ (положение + размер): положение больше не сохраняется — окно встаёт под картой
+_GRAPH_GEOMETRY_OLD = "graph/geometry"
 
 
 class AppSettings:
@@ -78,12 +80,13 @@ class AppSettings:
         self._settings.setValue(_GRAPH_ENABLED, enabled)
         self._settings.sync()
 
-    def graph_geometry(self) -> QByteArray | None:
-        value = self._settings.value(_GRAPH_GEOMETRY)
-        return value if isinstance(value, QByteArray) and not value.isEmpty() else None
+    def graph_size(self) -> QSize | None:
+        value = self._settings.value(_GRAPH_SIZE)
+        return value if isinstance(value, QSize) and value.isValid() else None
 
-    def set_graph_geometry(self, geometry: QByteArray) -> None:
-        self._settings.setValue(_GRAPH_GEOMETRY, geometry)
+    def set_graph_size(self, size: QSize) -> None:
+        self._settings.setValue(_GRAPH_SIZE, size)
+        self._settings.remove(_GRAPH_GEOMETRY_OLD)
         self._settings.sync()
 
 

@@ -12,6 +12,14 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidg
 
 from src.ui.value_colors import NON_FINITE_RGB, VALUE_STOPS
 
+
+def hint_icon(text: str) -> QLabel:
+    """Значок ⓘ с подсказкой при наведении."""
+    label = QLabel("ⓘ")
+    label.setToolTip(text)
+    label.setStyleSheet("color: #888; font-size: 15px;")
+    return label
+
 # Размер сцены: оси X/Y нормируются в [0, SIZE_XY], значения — в [0, SIZE_Z]
 SIZE_XY = 10.0
 SIZE_Z = 5.0
@@ -257,11 +265,11 @@ class SurfaceView(QWidget):
 
         reset_btn = QPushButton("Сбросить вид")
         reset_btn.clicked.connect(self.reset_camera)
-        self._hint = QLabel(
-            "Клик — выбрать точку, Ctrl/⌘+клик — добавить; "
-            "перетаскивание — вращение, колесо — масштаб, СКМ — сдвиг"
+        # Подсказка — значком с тултипом: длинная строка задавала бы минимальную ширину окна
+        self._hint = hint_icon(
+            "Клик — выбрать точку, Ctrl/⌘+клик — добавить\n"
+            "Перетаскивание — вращение, колесо — масштаб, СКМ — сдвиг"
         )
-        self._hint.setStyleSheet("color: #888;")
 
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)

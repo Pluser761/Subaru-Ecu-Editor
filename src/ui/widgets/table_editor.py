@@ -5,7 +5,7 @@ import math
 import numpy as np
 
 from PyQt6.QtCore import Qt, QModelIndex, QRect, QEvent, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QFontMetrics, QHelpEvent, QKeySequence, QMouseEvent, QPainter, QPalette, QPen, QValidator
+from PyQt6.QtGui import QColor, QFontMetrics, QHelpEvent, QKeySequence, QMouseEvent, QPainter, QPalette, QPen, QValidator
 from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
@@ -98,25 +98,23 @@ class DecimalCellDelegate(QStyledItemDelegate):
     """Редактор ячейки: фильтр ввода + нормализация к xx.xx; фон по значению;
     рамка изменений от checkpoint."""
 
-    def initStyleOption(self, option: QStyleOptionViewItem | None, index: QModelIndex) -> None:
-        super().initStyleOption(option, index)
-        table = self.parent()
-        if option is None or not isinstance(table, TableEditor):
-            return
-        t = table.value_position(index.row(), index.column())
-        if t is not None:
-            option.backgroundBrush = QBrush(cell_background(t, CELL_COLOR_STRENGTH))
-
     def paint(
         self,
         painter: QPainter | None,
         option: QStyleOptionViewItem,
         index: QModelIndex,
     ) -> None:
-        super().paint(painter, option, index)
         table = self.parent()
         if painter is None or not isinstance(table, TableEditor):
+            super().paint(painter, option, index)
             return
+        # Фон по значению — здесь, а не в initStyleOption: та вызывается и при каждом
+        # пересчёте высоты строк (sizeHint), и шаг по сотне ячеек превращался в десятки
+        # тысяч вычислений цвета. Выделение стиль рисует поверх заливки.
+        t = table.value_position(index.row(), index.column())
+        if t is not None:
+            painter.fillRect(option.rect, cell_background(t, CELL_COLOR_STRENGTH))
+        super().paint(painter, option, index)
         diff = table.checkpoint_diff(index.row(), index.column())
         if diff == 0:
             return
@@ -914,15 +912,14 @@ class TableEditor(QTableWidget):
         self._baseline = None
 
     def _on_data_changed(self, *_args: object) -> None:
-        # Мин/макс могли измениться — перекрашиваем всю таблицу, а не только правленую ячейку
-        old = self._value_range
+        # Мин/макс могли измениться — перекрашиваем всю таблицу, а не только правленую ячейку.
+        # Диапазон пересчитается при отрисовке, один раз на серию правок (шаг по сотне ячеек)
         self._value_range = None
         if self._loading:
             return
-        if self._current_value_range() != old:
-            viewport = self.viewport()
-            if viewport is not None:
-                viewport.update()
+        viewport = self.viewport()
+        if viewport is not None:
+            viewport.update()
 
     def _current_value_range(self) -> tuple[float, float]:
         if self._value_range is None:

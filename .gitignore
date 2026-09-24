@@ -26,3 +26,5 @@ htmlcov/
 *.bin
 *.hex
 *.rom
+
+tmp

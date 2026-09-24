@@ -3,9 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
-from src.ui.widgets.surface_view import BACKGROUND, NON_FINITE_RGBA, VALUE_COLORMAP
+from src.ui.widgets.surface_view import BACKGROUND, NON_FINITE_RGBA, VALUE_COLORMAP, hint_icon
 
 LINE_COLOR = (60, 60, 60)
 LINE_WIDTH = 2
@@ -64,8 +64,7 @@ class CurveView(QWidget):
 
         reset_btn = QPushButton("Сбросить вид")
         reset_btn.clicked.connect(self.reset_view)
-        hint = QLabel("Клик — выбрать точку, Ctrl/⌘+клик — добавить; колесо — масштаб, перетаскивание — сдвиг")
-        hint.setStyleSheet("color: #888;")
+        hint = hint_icon("Клик — выбрать точку, Ctrl/⌘+клик — добавить\nКолесо — масштаб, перетаскивание — сдвиг")
 
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
