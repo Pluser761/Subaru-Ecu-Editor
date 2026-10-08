@@ -53,10 +53,14 @@ class MainWindow(QMainWindow):
 
         # Колбэки, которые вешает presenter
         self.on_open_rom: Callable[[], None] | None = None
-        self.on_save_rom: Callable[[], None] | None = None
+        # Сохранение возвращает, удалось ли (результат окну не нужен)
+        self.on_save_rom: Callable[[], object] | None = None
+        self.on_save_rom_as: Callable[[], object] | None = None
         self.on_show_editor: Callable[[], None] | None = None
         self.on_show_tools: Callable[[], None] | None = None
         self.on_transfer_maps: Callable[[], None] | None = None
+        # Можно ли закрыть окно (несохранённые правки); False — отменить закрытие
+        self.on_close_requested: Callable[[], bool] | None = None
         # Перед закрытием окна (сохранение настроек)
         self.on_close: Callable[[], None] | None = None
 
@@ -75,6 +79,11 @@ class MainWindow(QMainWindow):
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self._emit_save)
         file_menu.addAction(save_action)
+
+        save_as_action = QAction("Save ROM &As…", self)
+        save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
+        save_as_action.triggered.connect(self._emit_save_as)
+        file_menu.addAction(save_as_action)
 
         file_menu.addSeparator()
         settings_action = QAction("Settings…", self)
@@ -121,6 +130,10 @@ class MainWindow(QMainWindow):
         maps_menu.addAction(transfer_action)
 
     def closeEvent(self, event: QCloseEvent | None) -> None:
+        if self.on_close_requested is not None and not self.on_close_requested():
+            if event is not None:
+                event.ignore()
+            return
         if self.on_close:
             self.on_close()
         # hide, а не close: закрытие окна графика пользователем выключает его автопоказ
@@ -148,11 +161,40 @@ class MainWindow(QMainWindow):
     def clear_status(self) -> None:
         self._status_line.clear_message()
 
-    def set_rom_path(self, path: str | None) -> None:
+    def set_rom_path(self, path: str | None, modified: bool = False) -> None:
+        """Заголовок окна: открытый файл; [*] — отметка несохранённых правок (Qt)."""
         title = "Subaru ECU Editor"
         if path:
-            title = f"{title} — {path}"
+            title = f"{title} — {path}[*]"
         self.setWindowTitle(title)
+        self.setWindowModified(modified)
+
+    def ask_save_rom_path(self, suggested: str) -> str | None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save ROM",
+            suggested,
+            "ROM files (*.bin *.hex);;All files (*)",
+        )
+        return path or None
+
+    def ask_unsaved_changes(self) -> str:
+        """«save» / «discard» / «cancel» — что делать с несохранёнными правками ROM."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Несохранённые правки")
+        box.setText("В прошивке есть несохранённые правки.")
+        box.setInformativeText("Сохранить их перед продолжением?")
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.Save)
+        answer = box.exec()
+        if answer == QMessageBox.StandardButton.Save:
+            return "save"
+        if answer == QMessageBox.StandardButton.Discard:
+            return "discard"
+        return "cancel"
 
     def ask_open_rom_path(self) -> str | None:
         path, _ = QFileDialog.getOpenFileName(
@@ -195,6 +237,10 @@ class MainWindow(QMainWindow):
     def _emit_save(self) -> None:
         if self.on_save_rom:
             self.on_save_rom()
+
+    def _emit_save_as(self) -> None:
+        if self.on_save_rom_as:
+            self.on_save_rom_as()
 
     def _emit_show_editor(self) -> None:
         if self.on_show_editor:

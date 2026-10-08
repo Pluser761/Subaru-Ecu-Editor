@@ -6,8 +6,12 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
+from src.core import checksum
 from src.core.checkpoint import table_differs
 from src.core.models import CalibrationTable, Checkpoint
 from src.core.parser import EcuParser
@@ -31,6 +35,32 @@ class RomSession:
         # Checkpoint карт, которые уже открывали или меняли; живут, пока открыт ROM
         self._checkpoints: dict[str, Checkpoint] = {}
         self._changed: set[str] = set()
+        # Почему сохранять нельзя (None — можно): суммы оригинала проверяются при открытии.
+        # Сходятся — алгоритм для этого ЭБУ подходит; нет таблицы или не сходятся — не знаем как
+        self.save_blocker = _save_blocker(parser)
+
+    # --- Сохранение ---
+
+    def save(self, path: str | Path) -> int:
+        """Пересчитать контрольные суммы и записать образ в path (через временный файл);
+        вернуть число исправленных сумм. ValueError — сохранять нельзя (save_blocker)."""
+        if self.save_blocker:
+            raise ValueError(self.save_blocker)
+        table = self.parser.checksum_table()
+        assert table is not None
+        fixed = checksum.fix(self.parser.rom_bytes, *table)
+        target = Path(path)
+        fd, tmp = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(self.parser.rom_bytes)
+            os.replace(tmp, target)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        self.parser.file_path = str(target)
+        self.dirty = False
+        return fixed
 
     # --- Карты и checkpoint ---
 
@@ -95,6 +125,24 @@ class RomSession:
         if report.before:
             self.dirty = True
         return report
+
+
+def _save_blocker(parser: EcuParser) -> str | None:
+    if not parser.rom_bytes:
+        return "ROM не открыт"
+    table = parser.checksum_table()
+    if table is None:
+        return "Для этой прошивки неизвестна таблица контрольных сумм — сохранять небезопасно"
+    try:
+        valid = checksum.verify(parser.rom_bytes, *table)
+    except ValueError as exc:
+        return f"Таблица контрольных сумм не распознана: {exc}"
+    if not valid:
+        return (
+            "Контрольные суммы исходного файла не сходятся — алгоритм для этого ЭБУ не подходит "
+            "(или файл уже был изменён без пересчёта); сохранять небезопасно"
+        )
+    return None
 
 
 def _snapshot(table: CalibrationTable) -> Checkpoint:

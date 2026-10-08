@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
+from src.core.checksum import TABLE_NAME as CHECKSUM_TABLE
 from src.core.ecu_lookup import has_denso_lookup
 from src.core.models import AxisDef, CalibrationTable, MapInfo, RomDefinition, TableDef
 from src.core.rom_io import (
@@ -100,6 +101,13 @@ class EcuParser:
         if self._ecu_interpolation is None:
             self._ecu_interpolation = has_denso_lookup(self.rom_bytes)
         return self._ecu_interpolation
+
+    def checksum_table(self) -> tuple[int, int] | None:
+        """(адрес, размер в байтах) таблицы контрольных сумм из definitions или None."""
+        table = self.definition.tables.get(CHECKSUM_TABLE) if self.definition else None
+        if table is None or table.storageaddress is None or not table.sizey:
+            return None
+        return table.storageaddress, table.sizey
 
     def axis_users(self) -> dict[int, list[str]]:
         """Адрес оси в ROM → редактируемые таблицы, которые её используют."""

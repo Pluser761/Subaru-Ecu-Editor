@@ -35,9 +35,14 @@ class MainPresenter:
         self._defs_repo: EcuDefsRepository | None = None
         # Карты, ждущие перепроверки «изменена ли» (отметка в дереве) — отложенно, пачкой
         self._to_check: set[str] = set()
+        # Куда пишет Save; None — ещё не сохраняли в этой сессии: первый Save спросит путь,
+        # чтобы случайно не перезаписать стоковую прошивку
+        self._save_path: str | None = None
 
         window.on_open_rom = self.open_rom
         window.on_save_rom = self.save_rom
+        window.on_save_rom_as = self.save_rom_as
+        window.on_close_requested = self._confirm_discard
         window.on_transfer_maps = self.transfer_maps
         window.on_show_editor = window.show_editor
         window.on_show_tools = window.show_tools
@@ -96,6 +101,8 @@ class MainPresenter:
         self._window.set_status(f"{xmlid}: карт {len(maps)}")
 
     def open_rom(self) -> None:
+        if not self._confirm_discard():
+            return
         path = self._window.ask_open_rom_path()
         if not path:
             return
@@ -117,6 +124,7 @@ class MainPresenter:
 
         self._window.editor_view.close_all_maps()
         self._session = RomSession(parser)
+        self._save_path = None
         self._to_check.clear()
         self._window.editor_view.set_changed_maps(set())
         self._window.set_rom_path(path)
@@ -177,12 +185,59 @@ class MainPresenter:
             )
         self._window.show_transfer_report(markdown, report_file)
 
-    def save_rom(self) -> None:
+    def save_rom(self) -> bool:
+        """Сохранить в файл этой сессии; в первый раз — спросить путь. True — сохранено."""
+        if self._save_path is None:
+            return self.save_rom_as()
+        return self._save_to(self._save_path)
+
+    def save_rom_as(self) -> bool:
+        if not self._can_save():
+            return False
+        current = Path(self._parser.file_path or "rom.hex")
+        stem = current.stem if current.stem.endswith("-edited") else f"{current.stem}-edited"
+        path = self._window.ask_save_rom_path(str(current.with_name(f"{stem}{current.suffix}")))
+        if not path:
+            return False
+        return self._save_to(path)
+
+    def _can_save(self) -> bool:
         if not self._parser.file_path:
-            self._window.show_info("Save", "Сначала откройте ROM.")
-            return
-        self._window.set_status("Сохранение пока не реализовано.")
-        self._window.show_info("Save", "Запись ROM пока не реализована.")
+            self._window.show_info("Сохранение", "Сначала откройте ROM.")
+            return False
+        if self._session.save_blocker:
+            self._window.set_error(self._session.save_blocker)
+            self._window.show_info("Сохранение", self._session.save_blocker)
+            return False
+        return True
+
+    def _save_to(self, path: str) -> bool:
+        if not self._can_save():
+            return False
+        try:
+            fixed = self._session.save(path)
+        except (OSError, ValueError) as exc:
+            self._window.set_error(f"Не сохранено: {exc}")
+            self._window.show_info("Сохранение", f"Не сохранено: {exc}")
+            return False
+        self._save_path = path
+        self._window.set_rom_path(path, modified=False)
+        definition = self._parser.definition
+        self._window.editor_view.set_rom_info(path, definition.romid if definition else None)
+        if self._settings is not None:
+            self._settings.set_last_rom_path(path)
+        self._window.set_status(f"Сохранено: {Path(path).name} · контрольных сумм пересчитано: {fixed}")
+        return True
+
+    def _confirm_discard(self) -> bool:
+        """Можно ли бросить текущий образ (закрытие, открытие другого ROM): нет правок, их
+        сохранили или пользователь отказался от них."""
+        if not self._session.dirty:
+            return True
+        answer = self._window.ask_unsaved_changes()
+        if answer == "save":
+            return self.save_rom()
+        return answer == "discard"
 
     def select_map(self, map_id: str) -> None:
         """Открыть окно карты или поднять уже открытое (фокус остаётся в дереве)."""
@@ -225,6 +280,8 @@ class MainPresenter:
         changed = self._session.refresh_changed(self._to_check)
         self._to_check.clear()
         self._window.editor_view.set_changed_maps(changed)
+        # Отметка несохранённых правок в заголовке
+        self._window.setWindowModified(self._session.dirty)
 
     def on_cell_changed(self, map_id: str, row: int, col: int, value: float) -> None:
         editor = self._window.editor_view
