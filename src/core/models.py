@@ -36,6 +36,14 @@ class CalibrationTable(BaseModel):
     category: str = ""
     userlevel: int | None = None
     storage: str = ""  # «uint8 · 0xC0E58»
+    # Формула из definitions (scaling выше может быть пересчитан в экранные единицы)
+    formula: str = ""
+    # Знаков после точки на экране: значения и оси (bar — 3, остальное — 2)
+    decimals: int = 2
+    x_decimals: int = 2
+    y_decimals: int = 2
+    # Пояснение, если единицы на экране пересчитаны («давление в bar, в definitions — psi»)
+    units_note: str = ""
 
     @property
     def rows(self) -> int:

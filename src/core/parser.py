@@ -256,6 +256,7 @@ class EcuParser:
             scaling=scaling,
             ecu_interpolation=self.ecu_interpolation,
             description=table.description.strip(),
+            formula=scaling.expression if scaling else "",
             category=table.category,
             userlevel=table.userlevel,
             storage=f"{table.storagetype} · 0x{table.storageaddress:X}" if table.storageaddress is not None else "",

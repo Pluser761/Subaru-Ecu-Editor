@@ -7,7 +7,7 @@ import math
 
 from PyQt6.QtCore import QAbstractTableModel, QModelIndex, QObject, Qt, pyqtSignal
 
-from src.core.checkpoint import baseline, diff_sign
+from src.core.checkpoint import baseline, diff_sign, epsilon_for
 from src.core.models import CalibrationTable, Checkpoint, Scaling
 from src.ui.map.cells import change_tooltip, format_cell_value, parse_cell_value
 
@@ -35,6 +35,9 @@ class MapTableModel(QAbstractTableModel):
             Qt.Orientation.Vertical: None,
         }
         self._checkpoint: Checkpoint | None = None
+        # Знаков после точки на экране: значения и оси (bar — 3)
+        self._decimals = 2
+        self._axis_decimals = {Qt.Orientation.Horizontal: 2, Qt.Orientation.Vertical: 2}
         # Как сравнивать с checkpoint после сдвига осей: формула значений и расчёт ЭБУ
         self._scaling: Scaling | None = None
         self._ecu_interpolation = False
@@ -63,6 +66,11 @@ class MapTableModel(QAbstractTableModel):
                 Qt.Orientation.Vertical: _labels_if_static(table.y_labels, rows),
             }
         self._scaling = table.scaling if table is not None else None
+        self._decimals = table.decimals if table is not None else 2
+        self._axis_decimals = {
+            Qt.Orientation.Horizontal: table.x_decimals if table is not None else 2,
+            Qt.Orientation.Vertical: table.y_decimals if table is not None else 2,
+        }
         self._ecu_interpolation = table.ecu_interpolation if table is not None else False
         self._checkpoint = None
         self._invalidate()
@@ -81,7 +89,7 @@ class MapTableModel(QAbstractTableModel):
         if not index.isValid():
             return None
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
-            return format_cell_value(self._values[index.row()][index.column()])
+            return format_cell_value(self._values[index.row()][index.column()], self._decimals)
         if role == Qt.ItemDataRole.TextAlignmentRole:
             return _ALIGN_RIGHT
         return None
@@ -108,7 +116,7 @@ class MapTableModel(QAbstractTableModel):
         if labels is not None:
             return labels[section] if 0 <= section < len(labels) else ""
         axis = self._axes[orientation]
-        return format_cell_value(axis[section]) if 0 <= section < len(axis) else ""
+        return format_cell_value(axis[section], self._axis_decimals[orientation]) if 0 <= section < len(axis) else ""
 
     def setHeaderData(
         self, section: int, orientation: Qt.Orientation, value: object, role: int = Qt.ItemDataRole.EditRole
@@ -146,6 +154,13 @@ class MapTableModel(QAbstractTableModel):
         self._axes[orientation][index] = value
         self._baseline = None
         self.headerDataChanged.emit(orientation, index, index)
+
+    @property
+    def decimals(self) -> int:
+        return self._decimals
+
+    def axis_decimals(self, orientation: Qt.Orientation) -> int:
+        return self._axis_decimals[orientation]
 
     def labels(self, orientation: Qt.Orientation) -> list[str] | None:
         """Подписи статической оси или None, если ось числовая и редактируемая."""
@@ -190,7 +205,7 @@ class MapTableModel(QAbstractTableModel):
         base = self._checkpoint_baseline()
         if row >= len(base) or col >= len(base[row]):
             return 0
-        return diff_sign(self._values[row][col], base[row][col])
+        return diff_sign(self._values[row][col], base[row][col], epsilon_for(self._decimals))
 
     def axis_diff(self, orientation: Qt.Orientation, index: int) -> int:
         """То же для точки оси; у статических осей изменений не бывает."""
@@ -200,7 +215,7 @@ class MapTableModel(QAbstractTableModel):
         base_axis = self._checkpoint.x_axis if horizontal else self._checkpoint.y_axis
         if not 0 <= index < len(base_axis):
             return 0
-        return diff_sign(self._axes[orientation][index], base_axis[index])
+        return diff_sign(self._axes[orientation][index], base_axis[index], epsilon_for(self._axis_decimals[orientation]))
 
     def tooltip(self, row: int, col: int) -> str:
         """«Checkpoint: … / Изменение: …» для изменённой ячейки, иначе пустая строка."""
@@ -208,8 +223,9 @@ class MapTableModel(QAbstractTableModel):
             return ""
         note = ""
         if self.axis_diff(Qt.Orientation.Horizontal, col) or self.axis_diff(Qt.Orientation.Vertical, row):
-            note = f"по осям checkpoint; в ячейке было {format_cell_value(self._checkpoint.values[row][col])}"
-        return change_tooltip(self._values[row][col], self._checkpoint_baseline()[row][col], note)
+            was = format_cell_value(self._checkpoint.values[row][col], self._decimals)
+            note = f"по осям checkpoint; в ячейке было {was}"
+        return change_tooltip(self._values[row][col], self._checkpoint_baseline()[row][col], note, self._decimals)
 
     # --- Цвет ---
 

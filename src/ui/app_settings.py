@@ -3,6 +3,7 @@ from __future__ import annotations
 from PyQt6.QtCore import QSettings, QSize
 from PyQt6.QtGui import QKeySequence
 
+from src.core.units import UnitSystem
 from src.ui.key_bindings import DEFAULT_KEYS, MODIFIER_KEYS, Action
 
 SETTINGS_ORG = "subaru_ecu_editor"
@@ -12,6 +13,7 @@ _KEY_PREFIX = "keys/"
 _LAST_ROM = "session/last_rom"
 _GRAPH_ENABLED = "graph/enabled"
 _GRAPH_SIZE = "graph/size"
+_UNITS = "view/units"
 # Старый ключ (положение + размер): положение больше не сохраняется — окно встаёт под картой
 _GRAPH_GEOMETRY_OLD = "graph/geometry"
 
@@ -67,6 +69,19 @@ class AppSettings:
             self._settings.setValue(_LAST_ROM, path)
         else:
             self._settings.remove(_LAST_ROM)
+        self._settings.sync()
+
+    # --- Единицы на экране ---
+
+    def unit_system(self) -> UnitSystem:
+        value = self._settings.value(_UNITS, UnitSystem.DEFINITIONS.value)
+        try:
+            return UnitSystem(str(value))
+        except ValueError:
+            return UnitSystem.DEFINITIONS
+
+    def set_unit_system(self, system: UnitSystem) -> None:
+        self._settings.setValue(_UNITS, system.value)
         self._settings.sync()
 
     # --- Окно графика ---

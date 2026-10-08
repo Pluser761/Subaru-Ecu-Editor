@@ -215,6 +215,7 @@ class MapWindow(QWidget):
         self._set_shared_axes(table.x_shared_with, table.y_shared_with)
         self._value_steps = None
         self._steps.set_axis_mode(False)
+        self._steps.set_decimals(table.decimals)
         self._steps.set_increments(table.fine_increment, table.coarse_increment)
 
         if table.rows == 1 and table.cols == 1:
@@ -222,7 +223,7 @@ class MapWindow(QWidget):
             self._table.set_table(None)
             self._set_axis_titles("", "")
             cp = checkpoint.values[0][0] if checkpoint and checkpoint.values and checkpoint.values[0] else None
-            self._constant.set_constant(table.values[0][0], table.unit or "Значение", cp)
+            self._constant.set_constant(table.values[0][0], table.unit or "Значение", cp, table.decimals)
             self._pages.setCurrentWidget(self._constant)
         else:
             self._mode = _Mode.ROW if table.cols == 1 else _Mode.TABLE
@@ -382,6 +383,7 @@ class MapWindow(QWidget):
         """Выделены точки оси — поля шага показывают шаги этой оси; снято — шаги значений."""
         orientation = self._table.axis_selection_orientation()
         if orientation is None:
+            self._steps.set_decimals(self._table.map_model.decimals)
             if self._value_steps is not None:
                 self._steps.set_increments(*self._value_steps)
                 self._value_steps = None
@@ -391,6 +393,7 @@ class MapWindow(QWidget):
             # Запоминаем как есть, с ручными правками пользователя
             self._value_steps = (self._steps.fine_step, self._steps.coarse_step)
         fine, coarse = self._axis_steps.get(orientation) or (None, None)
+        self._steps.set_decimals(self._table.map_model.axis_decimals(orientation))
         self._steps.set_increments(fine, coarse)
         self._steps.set_axis_mode(True)
 
@@ -498,5 +501,7 @@ def _transpose_table(table: CalibrationTable) -> CalibrationTable:
             "y_shared_with": table.x_shared_with,
             "x_increments": table.y_increments,
             "y_increments": table.x_increments,
+            "x_decimals": table.y_decimals,
+            "y_decimals": table.x_decimals,
         }
     )

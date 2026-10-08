@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 
-def format_matrix(values: list[list[float]]) -> str:
-    """TSV-матрица с двумя знаками после точки (удобно для Excel)."""
+def format_matrix(values: list[list[float]], decimals: int = 2) -> str:
+    """TSV-матрица с decimals знаками после точки (удобно для Excel)."""
     lines: list[str] = []
     for row in values:
-        lines.append("\t".join(f"{v:.2f}" for v in row))
+        lines.append("\t".join(f"{v:.{decimals}f}" for v in row))
     return "\n".join(lines)
 
 
-def format_axis(values: list[float]) -> str:
-    return "\t".join(f"{v:.2f}" for v in values)
+def format_axis(values: list[float], decimals: int = 2) -> str:
+    return "\t".join(f"{v:.{decimals}f}" for v in values)
 
 
 def parse_number(text: str) -> float:

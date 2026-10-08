@@ -21,15 +21,21 @@ from src.core.models import Checkpoint, Scaling
 EPSILON = 0.005
 
 
-def diff_sign(value: float, base: float) -> int:
-    """+1 — выросло относительно base, -1 — уменьшилось, 0 — без изменений (до 2 знаков)."""
+def diff_sign(value: float, base: float, epsilon: float = EPSILON) -> int:
+    """+1 — выросло относительно base, -1 — уменьшилось, 0 — без изменений (с точностью
+    epsilon — половина последнего показанного знака; по умолчанию 2 знака)."""
     if value == base:  # в т.ч. inf == inf
         return 0
     if not (math.isfinite(value) and math.isfinite(base)):
         return 1 if value > base else -1
-    if abs(value - base) < EPSILON:
+    if abs(value - base) < epsilon:
         return 0
     return 1 if value > base else -1
+
+
+def epsilon_for(decimals: int) -> float:
+    """Половина последнего показанного знака: 2 знака → 0.005, 3 → 0.0005."""
+    return 0.5 * 10.0 ** -decimals
 
 
 def same_values(a: list[float], b: list[float]) -> bool:

@@ -53,9 +53,15 @@ class StepControls(QWidget):
         """Подпись: шаги значений таблицы или шаги выделенной оси."""
         self._caption.setText("Шаг оси: мелкий (Ctrl)" if axis else "Шаг: мелкий (Ctrl)")
 
+    def set_decimals(self, decimals: int) -> None:
+        """Точность полей шага — как у значений на экране (bar — 3 знака)."""
+        for spin in (self._fine, self._coarse):
+            spin.setDecimals(decimals)
+            spin.setMinimum(10.0 ** -decimals)
+
     def set_increments(self, fine: float | None, coarse: float | None) -> None:
         """Шаги из definition таблицы; если не заданы — остаются текущие."""
         if fine is not None:
-            self._fine.setValue(max(fine, MIN_STEP))
+            self._fine.setValue(max(fine, self._fine.minimum()))
         if coarse is not None:
-            self._coarse.setValue(max(coarse, MIN_STEP))
+            self._coarse.setValue(max(coarse, self._coarse.minimum()))

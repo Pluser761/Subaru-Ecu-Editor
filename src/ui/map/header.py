@@ -152,7 +152,8 @@ class AxisHeaderView(QHeaderView):
             clipboard.setText("\t".join(labels[i] for i in sections if 0 <= i < len(labels)))
             return
         axis = model.axis(self.orientation())
-        clipboard.setText(format_axis([axis[i] for i in sections if 0 <= i < len(axis)]))
+        decimals = model.axis_decimals(self.orientation())
+        clipboard.setText(format_axis([axis[i] for i in sections if 0 <= i < len(axis)], decimals))
 
     def paste_axis(self) -> None:
         model = self._table.map_model

@@ -174,7 +174,7 @@ class MapTableView(QTableView):
             if not math.isfinite(value):
                 continue
             # Округляем как при отображении, чтобы не копить ошибку float
-            self._model.setData(self._model.index(row, col), round(value + delta, 2))
+            self._model.setData(self._model.index(row, col), round(value + delta, self._model.decimals))
             changed += 1
         return changed
 
@@ -188,7 +188,8 @@ class MapTableView(QTableView):
             changed = 0
             for section in sections:
                 if 0 <= section < len(axis) and math.isfinite(axis[section]):
-                    self._model.setHeaderData(section, header.orientation(), round(axis[section] + delta, 2))
+                    decimals = self._model.axis_decimals(header.orientation())
+                    self._model.setHeaderData(section, header.orientation(), round(axis[section] + delta, decimals))
                     changed += 1
             return changed
         return 0
@@ -224,7 +225,7 @@ class MapTableView(QTableView):
         if clipboard is None:
             self.operation_error.emit(CLIPBOARD_UNAVAILABLE_MESSAGE)
             return
-        clipboard.setText(format_matrix(matrix))
+        clipboard.setText(format_matrix(matrix, self._model.decimals))
         self.matrix_copied.emit(len(matrix), len(matrix[0]) if matrix else 0)
 
     def paste_selection(self) -> None:
@@ -300,7 +301,9 @@ class MapTableView(QTableView):
             for c in range(self.columnCount())
         ]
         widths += [
-            cell_metrics.horizontalAdvance(format_cell_value(v)) for row in self._model.values() for v in row
+            cell_metrics.horizontalAdvance(format_cell_value(v, self._model.decimals))
+            for row in self._model.values()
+            for v in row
         ]
         if widths:
             self._h_header.setMinimumSectionSize(max(widths) + COLUMN_TEXT_PADDING)

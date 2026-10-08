@@ -5,7 +5,9 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QTimer
 
 from src.core.parser import EcuParser
+from src.core.models import CalibrationTable, Checkpoint
 from src.core.session import RomSession
+from src.core.units import TableUnits, UnitSystem
 from src.core.transfer import check_compatibility, plan_transfer, render_report, save_report
 from src.core.xml_reader import EcuDefsRepository
 from src.ui.app_settings import AppSettings
@@ -42,6 +44,8 @@ class MainPresenter:
         # Окно «Ошибки и переключатели» и состояния переключателей на момент открытия файла
         self._switches_window: SwitchesWindow | None = None
         self._switch_original: dict[str, str | None] = {}
+        # Единицы на экране; ROM, сессия и checkpoint — всегда в единицах definitions
+        self._units_system = settings.unit_system() if settings is not None else UnitSystem.DEFINITIONS
 
         window.on_open_rom = self.open_rom
         window.on_save_rom = self.save_rom
@@ -49,6 +53,8 @@ class MainPresenter:
         window.on_close_requested = self._confirm_discard
         window.on_transfer_maps = self.transfer_maps
         window.on_show_switches = self.show_switches
+        window.on_unit_system = self.set_unit_system
+        window.set_unit_system_checked(self._units_system)
         window.on_show_editor = window.show_editor
         window.on_show_tools = window.show_tools
 
@@ -177,7 +183,7 @@ class MainPresenter:
             return
         # Открытые окна показывают перенесённые значения
         for map_id in editor.open_maps():
-            editor.reload_map(self._session.load_table(map_id), self._session.checkpoint(map_id))
+            editor.reload_map(*self._display(map_id))
         self._check_changed(*report.before)
 
         markdown = render_report(report)
@@ -294,11 +300,11 @@ class MainPresenter:
             editor.raise_map(map_id)
             return
         try:
-            table = self._session.load_table(map_id)
+            table, checkpoint = self._display(map_id)
         except Exception as exc:  # noqa: BLE001
             self._window.set_error(f"Не удалось загрузить карту: {exc}")
             return
-        editor.open_map(table, self._session.checkpoint(map_id))
+        editor.open_map(table, checkpoint)
         self._window.set_status(f"Карта: {table.name.strip()} · {describe_shape(table.rows, table.cols, '')}")
 
     def _connect_map_window(self, window: MapWindow) -> None:
@@ -314,7 +320,8 @@ class MainPresenter:
 
     def on_checkpoint_set(self, map_id: str) -> None:
         """В окне карты нажали Set checkpoint — точка отсчёта сессии та же, что на экране."""
-        self._session.set_checkpoint(map_id, self._window.editor_view.checkpoint(map_id))
+        shown = self._window.editor_view.checkpoint(map_id)
+        self._session.set_checkpoint(map_id, self._units(map_id).checkpoint_definition(shown) if shown else None)
         self._check_changed(map_id)
 
     def _check_changed(self, *map_ids: str) -> None:
@@ -333,17 +340,20 @@ class MainPresenter:
 
     def on_cell_changed(self, map_id: str, row: int, col: int, value: float) -> None:
         editor = self._window.editor_view
+        units = self._units(map_id)
         try:
-            stored = self._session.write_cell(map_id, row, col, value)
+            stored_def = self._session.write_cell(map_id, row, col, units.value_definition(value))
         except Exception as exc:  # noqa: BLE001 — показать в статусбаре и откатить ячейку
             self._window.set_error(f"Не удалось записать ({row}, {col}): {exc}")
-            editor.update_cell(map_id, row, col, self._parser.read_cell(map_id, row, col))
+            editor.update_cell(map_id, row, col, units.value_display(self._parser.read_cell(map_id, row, col)))
             return
         # В ячейке — то, что реально легло в ROM (квантование типа, границы диапазона)
+        stored = units.value_display(stored_def)
         editor.update_cell(map_id, row, col, stored)
         self._check_changed(map_id)
-        note = "" if round(stored, 2) == round(value, 2) else f" (введено {value:.2f})"
-        self._window.set_status(f"Изменено [{map_id}] ({row}, {col}) = {stored:.2f}{note}")
+        d = units.value.decimals if units.value else 2
+        note = "" if round(stored, d) == round(value, d) else f" (введено {value:.{d}f})"
+        self._window.set_status(f"Изменено [{map_id}] ({row}, {col}) = {stored:.{d}f}{note}")
 
     def on_x_axis_changed(self, map_id: str, col: int, value: float) -> None:
         self._on_axis_changed(map_id, "x", col, value)
@@ -353,22 +363,47 @@ class MainPresenter:
 
     def _on_axis_changed(self, map_id: str, axis: str, index: int, value: float) -> None:
         editor = self._window.editor_view
+        units = self._units(map_id)
         try:
-            result = self._session.write_axis(map_id, axis, index, value)
+            result = self._session.write_axis(map_id, axis, index, units.axis_definition(axis, value))
         except Exception as exc:  # noqa: BLE001
             self._window.set_error(f"Не удалось записать ось {axis.upper()}[{index}]: {exc}")
-            editor.update_axis(map_id, _orientation(axis), index, self._parser.read_axis(map_id, axis, index))
+            current = units.axis_display(axis, self._parser.read_axis(map_id, axis, index))
+            editor.update_axis(map_id, _orientation(axis), index, current)
             return
-        stored = result.stored
+        stored = units.axis_display(axis, result.stored)
         editor.update_axis(map_id, _orientation(axis), index, stored)
         # Открытые окна карт на той же оси показывают её новое значение (у них это может быть
-        # другая ось: X вместо Y)
+        # другая ось: X вместо Y) — в своих единицах
         for name, kind in result.shared:
-            editor.update_axis(name, _orientation(kind), index, stored)
+            editor.update_axis(name, _orientation(kind), index, self._units(name).axis_display(kind, result.stored))
         self._check_changed(map_id, *(name for name, _ in result.shared))
         shared = result.shared
         note = f" — ось общая, изменилась и у других таблиц: {len(shared)}" if shared else ""
-        self._window.set_status(f"Ось {axis.upper()} [{map_id}] {index} = {stored:.2f}{note}")
+        conv = units.axis(axis)
+        d = conv.decimals if conv else 2
+        self._window.set_status(f"Ось {axis.upper()} [{map_id}] {index} = {stored:.{d}f}{note}")
+
+    # --- Единицы на экране ---
+
+    def _units(self, map_id: str) -> TableUnits:
+        return TableUnits.for_table(self._parser.get_table_def(map_id), self._units_system)
+
+    def _display(self, map_id: str) -> tuple[CalibrationTable, Checkpoint]:
+        """Карта и её checkpoint для окна — в выбранных единицах."""
+        units = self._units(map_id)
+        return units.table(self._session.load_table(map_id)), units.checkpoint(self._session.checkpoint(map_id))
+
+    def set_unit_system(self, system: UnitSystem) -> None:
+        """View → Единицы: перерисовать открытые окна карт в новых единицах."""
+        self._units_system = system
+        if self._settings is not None:
+            self._settings.set_unit_system(system)
+        editor = self._window.editor_view
+        for map_id in editor.open_maps():
+            editor.reload_map(*self._display(map_id))
+        names = {UnitSystem.DEFINITIONS: "как в описаниях (psi, °F, mph)", UnitSystem.METRIC: "метрические (bar, °C, km/h)"}
+        self._window.set_status(f"Единицы: {names[system]}")
 
     def on_matrix_copied(self, rows: int, cols: int) -> None:
         self._window.set_status(f"Скопировано {rows}×{cols}")

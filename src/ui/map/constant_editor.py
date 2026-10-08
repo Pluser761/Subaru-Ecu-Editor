@@ -6,7 +6,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
 
-from src.core.checkpoint import diff_sign
+from src.core.checkpoint import diff_sign, epsilon_for
 from src.ui.map.cells import (
     CHECKPOINT_BORDER_WIDTH,
     CHECKPOINT_DOWN_COLOR,
@@ -33,6 +33,7 @@ class ConstantEditor(QWidget):
         super().__init__(parent)
         self._value = 0.0
         self._checkpoint = 0.0
+        self._decimals = 2
 
         self._caption = QLabel()
         self._caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -72,15 +73,16 @@ class ConstantEditor(QWidget):
         """Поле ввода — в фокусе при правке (для перехвата клавиш шага)."""
         return self._input
 
-    def set_constant(self, value: float, caption: str, checkpoint: float | None = None) -> None:
+    def set_constant(self, value: float, caption: str, checkpoint: float | None = None, decimals: int = 2) -> None:
         self._caption.setText(caption)
+        self._decimals = decimals
         self._checkpoint = value if checkpoint is None else checkpoint
         self.set_display(value)
 
     def set_display(self, value: float) -> None:
         """Показать значение без сигнала value_changed (например, после квантования)."""
         self._value = value
-        self._input.setText(format_cell_value(value))
+        self._input.setText(format_cell_value(value, self._decimals))
         self._update_border()
 
     def value(self) -> float:
@@ -98,7 +100,7 @@ class ConstantEditor(QWidget):
         if not math.isfinite(self._value):
             return False
         # Округляем как при отображении, чтобы не копить ошибку float
-        self._apply(round(self._value + delta, 2))
+        self._apply(round(self._value + delta, self._decimals))
         return True
 
     def _commit(self) -> None:
@@ -107,7 +109,7 @@ class ConstantEditor(QWidget):
         except ValueError:
             self.set_display(self._value)
             return
-        if format_cell_value(value) == format_cell_value(self._value):
+        if format_cell_value(value, self._decimals) == format_cell_value(self._value, self._decimals):
             self.set_display(self._value)
             return
         self._apply(value)
@@ -117,7 +119,7 @@ class ConstantEditor(QWidget):
         self.value_changed.emit(value)
 
     def _update_border(self) -> None:
-        diff = diff_sign(self._value, self._checkpoint)
+        diff = diff_sign(self._value, self._checkpoint, epsilon_for(self._decimals))
         if diff == 0:
             self._input.setStyleSheet("")
             self._input.setToolTip("")
@@ -126,4 +128,4 @@ class ConstantEditor(QWidget):
         self._input.setStyleSheet(
             f"QLineEdit {{ border: {CHECKPOINT_BORDER_WIDTH}px solid {color.name()}; padding: 2px; }}"
         )
-        self._input.setToolTip(change_tooltip(self._value, self._checkpoint))
+        self._input.setToolTip(change_tooltip(self._value, self._checkpoint, decimals=self._decimals))

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PyQt6.QtGui import QAction, QCloseEvent, QKeySequence
+from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
 from PyQt6.QtWidgets import (
     QMainWindow,
     QStackedWidget,
@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
 )
 
+from src.core.units import UnitSystem
 from src.ui.editor_view import EditorView
 from src.ui.key_bindings import KeyBindings
 from src.ui.settings_dialog import SettingsDialog
@@ -60,6 +61,7 @@ class MainWindow(QMainWindow):
         self.on_show_tools: Callable[[], None] | None = None
         self.on_transfer_maps: Callable[[], None] | None = None
         self.on_show_switches: Callable[[], None] | None = None
+        self.on_unit_system: Callable[[UnitSystem], None] | None = None
         # Можно ли закрыть окно (несохранённые правки); False — отменить закрытие
         self.on_close_requested: Callable[[], bool] | None = None
         # Перед закрытием окна (сохранение настроек)
@@ -113,6 +115,24 @@ class MainWindow(QMainWindow):
         tools_action = QAction("&Tools", self)
         tools_action.triggered.connect(self._emit_show_tools)
         view_menu.addAction(tools_action)
+
+        view_menu.addSeparator()
+        # Единицы на экране: как в описаниях или метрические — для всех величин сразу
+        units_menu = view_menu.addMenu("Единицы")
+        assert units_menu is not None
+        self._unit_actions: dict[UnitSystem, QAction] = {}
+        group = QActionGroup(self)
+        for system, title in (
+            (UnitSystem.DEFINITIONS, "Как в описаниях (psi, °F, mph)"),
+            (UnitSystem.METRIC, "Метрические (bar, °C, km/h)"),
+        ):
+            action = QAction(title, self)
+            action.setCheckable(True)
+            action.triggered.connect(lambda _checked, s=system: self._emit_unit_system(s))
+            group.addAction(action)
+            units_menu.addAction(action)
+            self._unit_actions[system] = action
+        self._unit_actions[UnitSystem.DEFINITIONS].setChecked(True)
 
         view_menu.addSeparator()
         # Окно графика: включено — показывается само для карт с графиком (2D/3D)
@@ -243,6 +263,13 @@ class MainWindow(QMainWindow):
     def _emit_save(self) -> None:
         if self.on_save_rom:
             self.on_save_rom()
+
+    def set_unit_system_checked(self, system: UnitSystem) -> None:
+        self._unit_actions[system].setChecked(True)
+
+    def _emit_unit_system(self, system: UnitSystem) -> None:
+        if self.on_unit_system:
+            self.on_unit_system(system)
 
     def _emit_show_switches(self) -> None:
         if self.on_show_switches:

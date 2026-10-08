@@ -33,8 +33,10 @@ class MapInfoDialog(QDialog):
 
 def describe_table(table: CalibrationTable) -> str:
     rows = [("Размерность", describe_shape(table.rows, table.cols, table.unit))]
-    if table.scaling is not None and table.scaling.expression.strip() != "x":
-        rows.append(("Формула", f"<code>{escape(table.scaling.expression)}</code> (x — сырое число в ROM)"))
+    if table.formula and table.formula.strip() != "x":
+        rows.append(("Формула", f"<code>{escape(table.formula)}</code> (x — сырое число в ROM, единицы definitions)"))
+    if table.units_note:
+        rows.append(("Единицы", escape(table.units_note)))
     rows += _axis_rows("X", table.x_title, table.x_axis, table.x_labels, table.x_shared_with, table.cols)
     rows += _axis_rows("Y", table.y_title, table.y_axis, table.y_labels, table.y_shared_with, table.rows)
     if table.storage:
@@ -75,7 +77,7 @@ def _axis_rows(
     if labels is not None:
         text = f"{caption}; подписи: {escape(', '.join(labels))}"
     else:
-        text = f"{caption}; {format_cell_value(values[0])} … {format_cell_value(values[-1])}, точек: {count}"
+        text = f"{caption}; {values[0]:g} … {values[-1]:g}, точек: {count}"
     if shared:
         listed = ", ".join(escape(n.strip()) for n in shared[:6]) + (" …" if len(shared) > 6 else "")
         text += f"<br><span style='color:#b36b00;'>общая ещё с {len(shared)}: {listed}</span>"

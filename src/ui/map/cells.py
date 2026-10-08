@@ -43,9 +43,9 @@ def describe_shape(rows: int, cols: int, unit: str) -> str:
     return " · ".join(parts)
 
 
-def format_cell_value(value: float) -> str:
-    """Всегда два знака после точки."""
-    return f"{value:.2f}"
+def format_cell_value(value: float, decimals: int = 2) -> str:
+    """Знаков после точки — по единицам таблицы (по умолчанию 2, bar — 3)."""
+    return f"{value:.{decimals}f}"
 
 
 def parse_cell_value(text: str) -> float:
@@ -72,15 +72,15 @@ def draw_checkpoint_border(painter: QPainter, rect: QRect, diff: int) -> None:
     painter.restore()
 
 
-def change_tooltip(value: float, base: float, note: str = "") -> str:
+def change_tooltip(value: float, base: float, note: str = "", decimals: int = 2) -> str:
     """Текст подсказки об изменении относительно checkpoint (два знака, как в ячейках).
 
     note — пояснение к значению checkpoint (например, что оно интерполировано).
     """
-    lines = [f"Checkpoint: {format_cell_value(base)}" + (f" ({note})" if note else "")]
+    lines = [f"Checkpoint: {format_cell_value(base, decimals)}" + (f" ({note})" if note else "")]
     delta = value - base
     if math.isfinite(delta):
-        change = f"Изменение: {delta:+.2f}"
+        change = f"Изменение: {delta:+.{decimals}f}"
         if math.isfinite(base) and abs(base) >= EPSILON:
             change += f" ({delta / abs(base) * 100:+.1f}%)"
         lines.append(change)
