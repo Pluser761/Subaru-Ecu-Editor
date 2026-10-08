@@ -8,6 +8,7 @@ from PyQt6.QtCore import QEvent, QItemSelection, QItemSelectionModel, Qt, pyqtSi
 from PyQt6.QtGui import QColor, QFontMetrics, QKeyEvent, QKeySequence, QPalette
 from PyQt6.QtWidgets import QApplication, QHeaderView, QTableView, QWidget
 
+from src.i18n import tr
 from src.core.matrix_clipboard import format_matrix, matrix_shape, parse_matrix, validate_paste_size, validate_rectangular
 from src.core.models import CalibrationTable, Checkpoint
 from src.ui.map.cells import CLIPBOARD_UNAVAILABLE_MESSAGE, NON_NUMERIC_CLIPBOARD_MESSAGE, format_cell_value
@@ -66,8 +67,10 @@ class MapTableView(QTableView):
         self._v_header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self._v_header.setDefaultSectionSize(self.fontMetrics().height() + ROW_PADDING)
         tooltip = (
-            "Двойной клик — изменить ось. Ctrl+клик — выделить точку оси (шаг меняет ось). "
-            "Ctrl+C/V — копировать/вставить ось"
+            tr(
+                "Двойной клик — изменить ось. Ctrl+клик — выделить точку оси (шаг меняет ось). "
+                "Ctrl+C/V — копировать/вставить ось"
+            )
         )
         for header in self._headers():
             header.setToolTip(tooltip)
@@ -217,13 +220,13 @@ class MapTableView(QTableView):
     def copy_selection(self) -> None:
         bounds = self._selection_bounds()
         if bounds is None:
-            self.operation_error.emit("Нет выделения для копирования")
+            self.operation_error.emit(tr("Нет выделения для копирования"))
             return
         top, left, bottom, right = bounds
         matrix = [[self._model.value(r, c) for c in range(left, right + 1)] for r in range(top, bottom + 1)]
         clipboard = QApplication.clipboard()
         if clipboard is None:
-            self.operation_error.emit(CLIPBOARD_UNAVAILABLE_MESSAGE)
+            self.operation_error.emit(tr(CLIPBOARD_UNAVAILABLE_MESSAGE))
             return
         clipboard.setText(format_matrix(matrix, self._model.decimals))
         self.matrix_copied.emit(len(matrix), len(matrix[0]) if matrix else 0)
@@ -231,16 +234,16 @@ class MapTableView(QTableView):
     def paste_selection(self) -> None:
         clipboard = QApplication.clipboard()
         if clipboard is None:
-            self.operation_error.emit(CLIPBOARD_UNAVAILABLE_MESSAGE)
+            self.operation_error.emit(tr(CLIPBOARD_UNAVAILABLE_MESSAGE))
             return
         try:
             matrix = parse_matrix(clipboard.text())
         except ValueError:
-            self.operation_error.emit(NON_NUMERIC_CLIPBOARD_MESSAGE)
+            self.operation_error.emit(tr(NON_NUMERIC_CLIPBOARD_MESSAGE))
             return
         bounds = self._selection_bounds()
         if bounds is None:
-            self.operation_error.emit("Нет активной ячейки для вставки")
+            self.operation_error.emit(tr("Нет активной ячейки для вставки"))
             return
         top, left, bottom, right = bounds
         paste_rows, paste_cols = matrix_shape(matrix)

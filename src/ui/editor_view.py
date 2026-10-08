@@ -6,6 +6,7 @@ from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QGuiApplication, QKeyEvent
 from PyQt6.QtWidgets import QHBoxLayout, QHeaderView, QLabel, QSizePolicy, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
+from src.i18n import tr
 from src.core.models import CalibrationTable, Checkpoint, MapInfo, RomId
 from src.ui.graph_window import GraphKind, GraphWindow
 from src.ui.key_bindings import PHYSICAL_CONTROL, KeyBindings
@@ -106,8 +107,8 @@ class EditorView(QWidget):
     def set_rom_info(self, path: str | None, romid: RomId | None) -> None:
         """Шапка над деревом: имя файла прошивки и её код (xmlid), рынок, модель, процессор."""
         if not path:
-            self._rom_file.setText("ROM не открыт")
-            self._rom_id.setText("File → Open ROM…")
+            self._rom_file.setText(tr("ROM не открыт"))
+            self._rom_id.setText(tr("Файл → Открыть ROM…"))
             self._rom_file.setToolTip("")
             self._rom_id.setToolTip("")
             return
@@ -142,7 +143,7 @@ class EditorView(QWidget):
                 brush = QBrush(level_color(info.userlevel))
                 leaf.setBackground(0, brush)
                 leaf.setBackground(1, brush)
-                leaf.setToolTip(0, f"Уровень {info.userlevel} — {LEVELS[info.userlevel]}")
+                leaf.setToolTip(0, tr("Уровень {n} — {name}", n=info.userlevel, name=tr(LEVELS[info.userlevel])))
             categories[info.category].addChild(leaf)
             self._leaves[info.id] = leaf
 
@@ -341,7 +342,7 @@ class EditorView(QWidget):
             return True
         if modifiers == PHYSICAL_CONTROL:
             if not self.close_map(map_id):
-                self.operation_info.emit(f"Карта не открыта: {map_id.strip()}")
+                self.operation_info.emit(tr("Карта не открыта: {name}", name=map_id.strip()))
             return True
         return False
 
@@ -358,9 +359,9 @@ def _legend() -> QWidget:
     row = QHBoxLayout(legend)
     row.setContentsMargins(2, 0, 2, 2)
     row.setSpacing(3)
-    caption = QLabel("Уровень")
+    caption = QLabel(tr("Уровень"))
     caption.setStyleSheet("color: #666;")
-    caption.setToolTip("Уровень таблицы из RomRaider definitions (userlevel): 1 — основные … 5 — служебные")
+    caption.setToolTip(tr("Уровень таблицы из RomRaider definitions (userlevel): 1 — основные … 5 — служебные"))
     row.addWidget(caption)
     for level, name in LEVELS.items():
         chip = QLabel(str(level))
@@ -369,11 +370,11 @@ def _legend() -> QWidget:
         chip.setStyleSheet(
             f"background: {level_color(level).name()}; border: 1px solid #bbb; border-radius: 3px; color: #333;"
         )
-        chip.setToolTip(f"Уровень {level} — {name}")
+        chip.setToolTip(tr("Уровень {n} — {name}", n=level, name=tr(name)))
         row.addWidget(chip)
     row.addStretch(1)
-    changed = QLabel(f"{CHANGED_MARK} изменена")
+    changed = QLabel(tr("{mark} изменена", mark=CHANGED_MARK))
     changed.setStyleSheet(f"color: {CHANGED_COLOR.name()};")
-    changed.setToolTip("Жирная карта с ● — значения или оси отличаются от её checkpoint")
+    changed.setToolTip(tr("Жирная карта с ● — значения или оси отличаются от её checkpoint"))
     row.addWidget(changed)
     return legend

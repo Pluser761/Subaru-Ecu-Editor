@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import sys
+
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QProcess, Qt, QTimer
 
+from src.i18n import Language, tr
 from src.core.parser import EcuParser
 from src.core.models import CalibrationTable, Checkpoint
 from src.core.session import RomSession
@@ -54,6 +57,7 @@ class MainPresenter:
         window.on_transfer_maps = self.transfer_maps
         window.on_show_switches = self.show_switches
         window.on_unit_system = self.set_unit_system
+        window.on_language = self.set_language
         window.set_unit_system_checked(self._units_system)
         window.on_show_editor = window.show_editor
         window.on_show_tools = window.show_tools
@@ -77,7 +81,7 @@ class MainPresenter:
             window.on_close = lambda: settings.set_graph_size(graph.size())
 
         self._window.editor_view.set_maps([])
-        self._window.set_status("Откройте ROM (File → Open ROM)")
+        self._window.set_status(tr("Откройте ROM (Файл → Открыть ROM)"))
 
     def restore_last_rom(self) -> None:
         """Открыть ROM, который был открыт в прошлый раз (checkpoint не восстанавливаются)."""
@@ -89,15 +93,15 @@ class MainPresenter:
         if not Path(path).is_file():
             # Файл переместили/удалили — забываем, чтобы не спотыкаться при каждом запуске
             self._settings.set_last_rom_path(None)
-            self._window.set_error(f"Прошлая прошивка не найдена: {path}")
+            self._window.set_error(tr("Прошлая прошивка не найдена: {path}", path=path))
             return
         self._open_rom_path(path)
 
     def _ensure_defs(self) -> EcuDefsRepository:
         if self._defs_repo is None:
             if not self._defs_path.exists():
-                raise FileNotFoundError(f"Definitions not found: {self._defs_path}")
-            self._window.set_status(f"Загрузка definitions: {self._defs_path.name}…")
+                raise FileNotFoundError(tr("Не найден файл definitions: {path}", path=self._defs_path))
+            self._window.set_status(tr("Загрузка definitions: {name}…", name=self._defs_path.name))
             self._defs_repo = EcuDefsRepository.load(self._defs_path)
         return self._defs_repo
 
@@ -109,7 +113,7 @@ class MainPresenter:
         maps = self._parser.list_maps()
         self._window.editor_view.set_maps(maps)
         xmlid = self._parser.xmlid or "?"
-        self._window.set_status(f"{xmlid}: карт {len(maps)}")
+        self._window.set_status(tr("{xmlid}: карт {n}", xmlid=xmlid, n=len(maps)))
 
     def open_rom(self) -> None:
         if not self._confirm_discard():
@@ -130,7 +134,7 @@ class MainPresenter:
             self._window.set_error(str(exc))
             return False
         except Exception as exc:  # noqa: BLE001 — показать в статусбаре
-            self._window.set_error(f"Ошибка открытия ROM: {exc}")
+            self._window.set_error(tr("Ошибка открытия ROM: {error}", error=exc))
             return False
 
         self._window.editor_view.close_all_maps()
@@ -154,7 +158,7 @@ class MainPresenter:
     def transfer_maps(self) -> None:
         """Перенос выбранных карт из донорской прошивки B в открытую A."""
         if not self._parser.file_path or self._parser.definition is None:
-            self._window.show_info("Перенос карт", "Сначала откройте целевую прошивку (A).")
+            self._window.show_info(tr("Перенос карт"), tr("Сначала откройте целевую прошивку (A)."))
             return
         path = self._window.ask_donor_rom_path()
         if not path:
@@ -162,12 +166,12 @@ class MainPresenter:
         try:
             donor = EcuParser.open_rom(path, self._defs_path, defs_repo=self._ensure_defs())
         except Exception as exc:  # noqa: BLE001
-            self._window.set_error(f"Донор (B): {exc}")
+            self._window.set_error(tr("Донор (B): {error}", error=exc))
             return
         reason = check_compatibility(donor, self._parser)
         if reason:
             self._window.set_error(reason)
-            self._window.show_info("Перенос карт", reason)
+            self._window.show_info(tr("Перенос карт"), reason)
             return
 
         plan = plan_transfer(donor, self._parser)
@@ -179,7 +183,7 @@ class MainPresenter:
         try:
             report = self._session.transfer(donor, names, plan)
         except Exception as exc:  # noqa: BLE001
-            self._window.set_error(f"Перенос не выполнен: {exc}")
+            self._window.set_error(tr("Перенос не выполнен: {error}", error=exc))
             return
         # Открытые окна показывают перенесённые значения
         for map_id in editor.open_maps():
@@ -191,11 +195,16 @@ class MainPresenter:
         try:
             saved = save_report(report)
         except OSError as exc:
-            self._window.set_error(f"Отчёт не сохранён: {exc}")
+            self._window.set_error(tr("Отчёт не сохранён: {error}", error=exc))
         else:
             report_file = saved
             self._window.set_status(
-                f"Перенесено из {report.source_id}: {len(report.before)} таблиц · отчёт {saved.name}"
+                tr(
+                    "Перенесено из {source}: таблиц {n} · отчёт {report}",
+                    source=report.source_id,
+                    n=len(report.before),
+                    report=saved.name,
+                )
             )
         self._window.show_transfer_report(markdown, report_file)
 
@@ -217,11 +226,11 @@ class MainPresenter:
 
     def _can_save(self) -> bool:
         if not self._parser.file_path:
-            self._window.show_info("Сохранение", "Сначала откройте ROM.")
+            self._window.show_info(tr("Сохранение"), tr("Сначала откройте ROM."))
             return False
         if self._session.save_blocker:
             self._window.set_error(self._session.save_blocker)
-            self._window.show_info("Сохранение", self._session.save_blocker)
+            self._window.show_info(tr("Сохранение"), self._session.save_blocker)
             return False
         return True
 
@@ -231,8 +240,8 @@ class MainPresenter:
         try:
             fixed = self._session.save(path)
         except (OSError, ValueError) as exc:
-            self._window.set_error(f"Не сохранено: {exc}")
-            self._window.show_info("Сохранение", f"Не сохранено: {exc}")
+            self._window.set_error(tr("Не сохранено: {error}", error=exc))
+            self._window.show_info(tr("Сохранение"), tr("Не сохранено: {error}", error=exc))
             return False
         self._save_path = path
         self._window.set_rom_path(path, modified=False)
@@ -240,7 +249,9 @@ class MainPresenter:
         self._window.editor_view.set_rom_info(path, definition.romid if definition else None)
         if self._settings is not None:
             self._settings.set_last_rom_path(path)
-        self._window.set_status(f"Сохранено: {Path(path).name} · контрольных сумм пересчитано: {fixed}")
+        self._window.set_status(
+            tr("Сохранено: {name} · контрольных сумм пересчитано: {fixed}", name=Path(path).name, fixed=fixed)
+        )
         return True
 
     def _confirm_discard(self) -> bool:
@@ -256,7 +267,7 @@ class MainPresenter:
     def show_switches(self) -> None:
         """Окно «Ошибки и переключатели» (таблицы Switch: DTC, OBD-II…)."""
         if not self._parser.file_path:
-            self._window.show_info("Ошибки и переключатели", "Сначала откройте ROM.")
+            self._window.show_info(tr("Ошибки и переключатели"), tr("Сначала откройте ROM."))
             return
         if self._switches_window is None:
             self._switches_window = SwitchesWindow(self._window)
@@ -284,13 +295,13 @@ class MainPresenter:
         try:
             self._session.write_switch(switch_id, state)
         except ValueError as exc:
-            self._window.set_error(f"Не удалось переключить: {exc}")
+            self._window.set_error(tr("Не удалось переключить: {error}", error=exc))
         info = self._parser.switch_info(switch_id)
         if self._switches_window is not None:
             self._switches_window.update_switch(info)
         self._window.setWindowModified(self._session.dirty)
         label = info.code or info.name
-        word = {"on": "включена", "off": "выключена"}.get(info.state or "", "?")
+        word = {"on": tr("включена"), "off": tr("выключена")}.get(info.state or "", "?")
         self._window.set_status(f"{label}: {word}")
 
     def select_map(self, map_id: str) -> None:
@@ -302,10 +313,12 @@ class MainPresenter:
         try:
             table, checkpoint = self._display(map_id)
         except Exception as exc:  # noqa: BLE001
-            self._window.set_error(f"Не удалось загрузить карту: {exc}")
+            self._window.set_error(tr("Не удалось загрузить карту: {error}", error=exc))
             return
         editor.open_map(table, checkpoint)
-        self._window.set_status(f"Карта: {table.name.strip()} · {describe_shape(table.rows, table.cols, '')}")
+        self._window.set_status(
+            tr("Карта: {name} · {shape}", name=table.name.strip(), shape=describe_shape(table.rows, table.cols, ""))
+        )
 
     def _connect_map_window(self, window: MapWindow) -> None:
         """Правки из окна карты — с map_id, в координатах карты в ROM."""
@@ -344,7 +357,7 @@ class MainPresenter:
         try:
             stored_def = self._session.write_cell(map_id, row, col, units.value_definition(value))
         except Exception as exc:  # noqa: BLE001 — показать в статусбаре и откатить ячейку
-            self._window.set_error(f"Не удалось записать ({row}, {col}): {exc}")
+            self._window.set_error(tr("Не удалось записать ({row}, {col}): {error}", row=row, col=col, error=exc))
             editor.update_cell(map_id, row, col, units.value_display(self._parser.read_cell(map_id, row, col)))
             return
         # В ячейке — то, что реально легло в ROM (квантование типа, границы диапазона)
@@ -352,8 +365,11 @@ class MainPresenter:
         editor.update_cell(map_id, row, col, stored)
         self._check_changed(map_id)
         d = units.value.decimals if units.value else 2
-        note = "" if round(stored, d) == round(value, d) else f" (введено {value:.{d}f})"
-        self._window.set_status(f"Изменено [{map_id}] ({row}, {col}) = {stored:.{d}f}{note}")
+        note = "" if round(stored, d) == round(value, d) else " " + tr("(введено {value})", value=f"{value:.{d}f}")
+        self._window.set_status(
+            tr("Изменено [{map}] ({row}, {col}) = {value}", map=map_id, row=row, col=col, value=f"{stored:.{d}f}")
+            + note
+        )
 
     def on_x_axis_changed(self, map_id: str, col: int, value: float) -> None:
         self._on_axis_changed(map_id, "x", col, value)
@@ -367,7 +383,9 @@ class MainPresenter:
         try:
             result = self._session.write_axis(map_id, axis, index, units.axis_definition(axis, value))
         except Exception as exc:  # noqa: BLE001
-            self._window.set_error(f"Не удалось записать ось {axis.upper()}[{index}]: {exc}")
+            self._window.set_error(
+                tr("Не удалось записать ось {axis}[{index}]: {error}", axis=axis.upper(), index=index, error=exc)
+            )
             current = units.axis_display(axis, self._parser.read_axis(map_id, axis, index))
             editor.update_axis(map_id, _orientation(axis), index, current)
             return
@@ -379,10 +397,13 @@ class MainPresenter:
             editor.update_axis(name, _orientation(kind), index, self._units(name).axis_display(kind, result.stored))
         self._check_changed(map_id, *(name for name, _ in result.shared))
         shared = result.shared
-        note = f" — ось общая, изменилась и у других таблиц: {len(shared)}" if shared else ""
+        note = " — " + tr("ось общая, изменилась и у других таблиц: {n}", n=len(shared)) if shared else ""
         conv = units.axis(axis)
         d = conv.decimals if conv else 2
-        self._window.set_status(f"Ось {axis.upper()} [{map_id}] {index} = {stored:.{d}f}{note}")
+        self._window.set_status(
+            tr("Ось {axis} [{map}] {index} = {value}", axis=axis.upper(), map=map_id, index=index, value=f"{stored:.{d}f}")
+            + note
+        )
 
     # --- Единицы на экране ---
 
@@ -402,14 +423,27 @@ class MainPresenter:
         editor = self._window.editor_view
         for map_id in editor.open_maps():
             editor.reload_map(*self._display(map_id))
-        names = {UnitSystem.DEFINITIONS: "как в описаниях (psi, °F, mph)", UnitSystem.METRIC: "метрические (bar, °C, km/h)"}
-        self._window.set_status(f"Единицы: {names[system]}")
+        names = {
+            UnitSystem.DEFINITIONS: tr("как в описаниях (psi, °F, mph)"),
+            UnitSystem.METRIC: tr("метрические (bar, °C, km/h)"),
+        }
+        self._window.set_status(tr("Единицы: {units}", units=names[system]))
+
+    def set_language(self, language: Language) -> None:
+        """View → Язык: сохранить; применяется перезапуском (с обычной проверкой правок)."""
+        if self._settings is not None:
+            self._settings.set_language(language)
+        if self._window.ask_restart_for_language() and self._confirm_discard():
+            # Правки уже сохранены или отброшены — закрытие без повторного вопроса
+            self._window.on_close_requested = None
+            QProcess.startDetached(sys.executable, sys.argv)
+            self._window.close()
 
     def on_matrix_copied(self, rows: int, cols: int) -> None:
-        self._window.set_status(f"Скопировано {rows}×{cols}")
+        self._window.set_status(tr("Скопировано {rows}×{cols}", rows=rows, cols=cols))
 
     def on_matrix_pasted(self, rows: int, cols: int) -> None:
-        self._window.set_status(f"Вставлено {rows}×{cols}")
+        self._window.set_status(tr("Вставлено {rows}×{cols}", rows=rows, cols=cols))
 
     def on_operation_error(self, message: str) -> None:
         self._window.set_error(message)

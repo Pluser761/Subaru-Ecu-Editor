@@ -4,9 +4,10 @@ from PyQt6.QtCore import QEvent, Qt, pyqtSignal
 from PyQt6.QtGui import QFocusEvent, QKeyEvent
 from PyQt6.QtWidgets import QPushButton, QWidget
 
+from src.i18n import N_, tr
 from src.ui.key_bindings import MODIFIER_KEYS, key_name
 
-CAPTURE_PROMPT = "Нажмите клавишу… (Esc — отмена)"
+CAPTURE_PROMPT = N_("Нажмите клавишу… (Esc — отмена)")
 
 
 class KeyCaptureButton(QPushButton):
@@ -37,7 +38,7 @@ class KeyCaptureButton(QPushButton):
 
     def _refresh(self) -> None:
         self.setChecked(self._capturing)
-        self.setText(CAPTURE_PROMPT if self._capturing else key_name(self._key))
+        self.setText(tr(CAPTURE_PROMPT) if self._capturing else key_name(self._key))
 
     def _start_capture(self) -> None:
         self._capturing = True

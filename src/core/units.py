@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from src.i18n import tr
 from src.core.models import AxisDef, CalibrationTable, Checkpoint, Scaling, TableDef
 from src.core.rom_io import is_static_axis
 from src.core.scaling import eval_expression
@@ -130,7 +131,7 @@ class TableUnits:
                 coarse_increment=_scaled(table.coarse_increment, conv),
                 decimals=conv.decimals,
             )
-            notes.append(f"значения в {conv.target} (в definitions — {conv.source})")
+            notes.append(tr("значения в {target} (в definitions — {source})", target=conv.target, source=conv.source))
         for name, axis_conv in (("x", self.x), ("y", self.y)):
             if axis_conv is None:
                 continue
@@ -143,7 +144,14 @@ class TableUnits:
                 ),
                 f"{name}_decimals": axis_conv.decimals,
             })
-            notes.append(f"ось {name.upper()} в {axis_conv.target} (в definitions — {axis_conv.source})")
+            notes.append(
+                tr(
+                    "ось {axis} в {target} (в definitions — {source})",
+                    axis=name.upper(),
+                    target=axis_conv.target,
+                    source=axis_conv.source,
+                )
+            )
         update["units_note"] = "; ".join(notes)
         return table.model_copy(update=update)
 

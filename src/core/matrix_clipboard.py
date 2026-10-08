@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from src.i18n import tr
 
 def format_matrix(values: list[list[float]], decimals: int = 2) -> str:
     """TSV-матрица с decimals знаками после точки (удобно для Excel)."""
@@ -78,15 +79,17 @@ def matrix_shape(matrix: list[list[float]]) -> tuple[int, int]:
 def validate_rectangular(matrix: list[list[float]]) -> str | None:
     """None если матрица прямоугольная, иначе текст ошибки."""
     if not matrix:
-        return "Буфер обмена пуст или не содержит чисел"
+        return tr("Буфер обмена пуст или не содержит чисел")
     width = len(matrix[0])
     if width == 0:
-        return "Пустая строка в буфере обмена"
+        return tr("Пустая строка в буфере обмена")
     for i, row in enumerate(matrix):
         if len(row) != width:
-            return (
-                f"Матрица непрямоугольная: строка 1 = {width} кол., "
-                f"строка {i + 1} = {len(row)} кол."
+            return tr(
+                "Матрица непрямоугольная: строка 1 = {width} кол., строка {row} = {count} кол.",
+                width=width,
+                row=i + 1,
+                count=len(row),
             )
     return None
 
@@ -100,12 +103,15 @@ def validate_paste_size(
 ) -> str | None:
     """Буфер обязан точно совпасть с размером выделения."""
     if paste_rows <= 0 or paste_cols <= 0:
-        return "Буфер обмена пуст или не содержит чисел"
+        return tr("Буфер обмена пуст или не содержит чисел")
 
     if paste_rows != sel_rows or paste_cols != sel_cols:
-        return (
-            f"Размер не совпадает: буфер {paste_rows}×{paste_cols}, "
-            f"выделение {sel_rows}×{sel_cols}"
+        return tr(
+            "Размер не совпадает: буфер {rows}×{cols}, выделение {sel_rows}×{sel_cols}",
+            rows=paste_rows,
+            cols=paste_cols,
+            sel_rows=sel_rows,
+            sel_cols=sel_cols,
         )
     return None
 
@@ -113,10 +119,7 @@ def validate_paste_size(
 def validate_axis_paste(value_count: int, *, target_count: int) -> str | None:
     """Буфер оси обязан точно совпасть с числом выбранных секций."""
     if value_count <= 0:
-        return "Буфер обмена пуст или не содержит чисел"
+        return tr("Буфер обмена пуст или не содержит чисел")
     if value_count != target_count:
-        return (
-            f"Размер оси не совпадает: буфер {value_count}, "
-            f"выделение {target_count}"
-        )
+        return tr("Размер оси не совпадает: буфер {count}, выделение {selected}", count=value_count, selected=target_count)
     return None

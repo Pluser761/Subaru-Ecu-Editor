@@ -5,6 +5,7 @@ import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
+from src.i18n import tr
 from src.ui.style import BACKGROUND, NON_FINITE_RGBA, VALUE_COLORMAP, hint_icon
 
 LINE_COLOR = (60, 60, 60)
@@ -62,9 +63,9 @@ class CurveView(QWidget):
         for graphics in (self._curve, self._points, self._selected):
             self._plot.addItem(graphics)
 
-        reset_btn = QPushButton("Сбросить вид")
+        reset_btn = QPushButton(tr("Сбросить вид"))
         reset_btn.clicked.connect(self.reset_view)
-        hint = hint_icon("Клик — выбрать точку, Ctrl/⌘+клик — добавить\nКолесо — масштаб, перетаскивание — сдвиг")
+        hint = hint_icon(tr("Клик — выбрать точку, Ctrl/⌘+клик — добавить\nКолесо — масштаб, перетаскивание — сдвиг"))
 
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)

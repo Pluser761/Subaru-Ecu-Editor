@@ -6,6 +6,7 @@ from functools import lru_cache
 
 import numpy as np
 
+from src.i18n import tr
 from src.core.models import AxisDef, Scaling, TableDef
 from src.core.scaling import eval_expression, eval_expression_array
 
@@ -245,7 +246,7 @@ def encode_value(
             return float(current)
         finite = np.isfinite(phys)
         if not finite.any():
-            raise ValueError(f"Scaling «{expression}» не даёт конечных значений")
+            raise ValueError(tr("Scaling «{expression}» не даёт конечных значений", expression=expression))
         distance = np.where(finite, np.abs(phys - value), np.inf)
         best = int(raws[int(np.argmin(distance))])
         if best == current:
@@ -259,7 +260,7 @@ def encode_value(
 
     raw = eval_expression(to_byte, value)
     if not math.isfinite(raw):
-        raise ValueError(f"Значение {value} не переводится в байты (to_byte «{to_byte}»)")
+        raise ValueError(tr("Значение {value} не переводится в байты (to_byte «{to_byte}»)", value=value, to_byte=to_byte))
     if st in _INT_RANGES:
         lo, hi = _INT_RANGES[st]
         return float(min(max(round(raw), lo), hi))
@@ -305,7 +306,7 @@ def write_table_cell(rom: bytearray, table: TableDef, row: int, col: int, value:
 
 def write_axis_value(rom: bytearray, axis: AxisDef | None, index: int, value: float) -> float:
     if axis is None or is_static_axis(axis) or axis.storageaddress is None:
-        raise ValueError("Ось не хранится в ROM и не редактируется")
+        raise ValueError(tr("Ось не хранится в ROM и не редактируется"))
     if index < 0 or (axis.size is not None and index >= axis.size):
         raise IndexError(f"Axis index {index} out of range")
     _, size = _struct_format(axis.storagetype, axis.endian)
@@ -397,6 +398,6 @@ def is_writable_axis(axis: AxisDef | None) -> bool:
 def write_axis_values(rom: bytearray, axis: AxisDef | None, values: np.ndarray) -> np.ndarray:
     """Записать все точки оси; вернуть сохранённые значения."""
     if axis is None or not is_writable_axis(axis):
-        raise ValueError("Ось не хранится в ROM и не редактируется")
+        raise ValueError(tr("Ось не хранится в ROM и не редактируется"))
     assert axis.storageaddress is not None
     return _write_block(rom, axis.storageaddress, axis.storagetype, axis.endian, axis.scaling, values)

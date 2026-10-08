@@ -6,6 +6,7 @@ from PyQt6.QtCore import QPoint, Qt, pyqtSignal
 from PyQt6.QtGui import QCloseEvent, QGuiApplication
 from PyQt6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
 
+from src.i18n import tr
 from src.ui.widgets.curve_view import CurveView
 from src.ui.widgets.surface_view import SurfaceView
 
@@ -39,7 +40,7 @@ class GraphWindow(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
-        self.setWindowTitle("График")
+        self.setWindowTitle(tr("График"))
         self.resize(*DEFAULT_SIZE)
         # Показ при выборе карты не должен уводить фокус из дерева или таблицы
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -76,7 +77,7 @@ class GraphWindow(QWidget):
         rows = len(values)
         cols = len(values[0]) if values else 0
         kind = graph_kind(rows, cols)
-        self.setWindowTitle(f"{name.strip()} — график" if name.strip() else "График")
+        self.setWindowTitle(tr("{name} — график", name=name.strip()) if name.strip() else tr("График"))
         if kind is GraphKind.MESH:
             self.curve.clear()
             self.surface.set_data(
@@ -100,7 +101,7 @@ class GraphWindow(QWidget):
 
     def clear(self) -> None:
         self._name = ""
-        self.setWindowTitle("График")
+        self.setWindowTitle(tr("График"))
         self.surface.clear()
         self.curve.clear()
 

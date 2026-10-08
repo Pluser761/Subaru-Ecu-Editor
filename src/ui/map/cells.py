@@ -8,12 +8,14 @@ import math
 from PyQt6.QtCore import QRect, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen, QValidator
 
+from src.i18n import N_, tr
 from src.core.checkpoint import EPSILON
 from src.core.matrix_clipboard import parse_number
 
-STATIC_AXIS_MESSAGE = "Статическая ось задана в definition и не редактируется"
-NON_NUMERIC_CLIPBOARD_MESSAGE = "Буфер обмена содержит нечисловые данные"
-CLIPBOARD_UNAVAILABLE_MESSAGE = "Буфер обмена недоступен"
+# Переводятся при показе: tr(STATIC_AXIS_MESSAGE)
+STATIC_AXIS_MESSAGE = N_("Статическая ось задана в definition и не редактируется")
+NON_NUMERIC_CLIPBOARD_MESSAGE = N_("Буфер обмена содержит нечисловые данные")
+CLIPBOARD_UNAVAILABLE_MESSAGE = N_("Буфер обмена недоступен")
 
 # Рамка относительно checkpoint: выросло — красная, уменьшилось — синяя
 CHECKPOINT_UP_COLOR = QColor("#d93025")
@@ -80,7 +82,7 @@ def change_tooltip(value: float, base: float, note: str = "", decimals: int = 2)
     lines = [f"Checkpoint: {format_cell_value(base, decimals)}" + (f" ({note})" if note else "")]
     delta = value - base
     if math.isfinite(delta):
-        change = f"Изменение: {delta:+.{decimals}f}"
+        change = tr("Изменение: {delta}", delta=f"{delta:+.{decimals}f}")
         if math.isfinite(base) and abs(base) >= EPSILON:
             change += f" ({delta / abs(base) * 100:+.1f}%)"
         lines.append(change)

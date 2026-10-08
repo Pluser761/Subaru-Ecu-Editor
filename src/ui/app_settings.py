@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QSettings, QSize
+from PyQt6.QtCore import QLocale, QSettings, QSize
 from PyQt6.QtGui import QKeySequence
 
 from src.core.units import UnitSystem
+from src.i18n import Language
 from src.ui.key_bindings import DEFAULT_KEYS, MODIFIER_KEYS, Action
 
 SETTINGS_ORG = "subaru_ecu_editor"
@@ -14,6 +15,7 @@ _LAST_ROM = "session/last_rom"
 _GRAPH_ENABLED = "graph/enabled"
 _GRAPH_SIZE = "graph/size"
 _UNITS = "view/units"
+_LANGUAGE = "ui/language"
 # Старый ключ (положение + размер): положение больше не сохраняется — окно встаёт под картой
 _GRAPH_GEOMETRY_OLD = "graph/geometry"
 
@@ -82,6 +84,20 @@ class AppSettings:
 
     def set_unit_system(self, system: UnitSystem) -> None:
         self._settings.setValue(_UNITS, system.value)
+        self._settings.sync()
+
+    # --- Язык интерфейса ---
+
+    def language(self) -> Language:
+        """Сохранённый язык; по умолчанию — язык системы (русский или английский)."""
+        value = self._settings.value(_LANGUAGE)
+        try:
+            return Language(str(value))
+        except ValueError:
+            return Language.RU if QLocale.system().language() == QLocale.Language.Russian else Language.EN
+
+    def set_language(self, language: Language) -> None:
+        self._settings.setValue(_LANGUAGE, language.value)
         self._settings.sync()
 
     # --- Окно графика ---

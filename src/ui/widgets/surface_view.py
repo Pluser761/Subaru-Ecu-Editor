@@ -10,6 +10,7 @@ from PyQt6.QtCore import QEvent, QObject, QPointF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QFontMetrics, QMouseEvent, QPainter, QResizeEvent, QTransform, QVector3D
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from src.i18n import tr
 from src.ui.style import BACKGROUND, NON_FINITE_RGBA, VALUE_COLORMAP, hint_icon
 
 # Размер сцены: оси X/Y нормируются в [0, SIZE_XY], значения — в [0, SIZE_Z]
@@ -248,12 +249,11 @@ class SurfaceView(QWidget):
         for item in self._items():
             self._view.addItem(item)
 
-        reset_btn = QPushButton("Сбросить вид")
+        reset_btn = QPushButton(tr("Сбросить вид"))
         reset_btn.clicked.connect(self.reset_camera)
         # Подсказка — значком с тултипом: длинная строка задавала бы минимальную ширину окна
         self._hint = hint_icon(
-            "Клик — выбрать точку, Ctrl/⌘+клик — добавить\n"
-            "Перетаскивание — вращение, колесо — масштаб, СКМ — сдвиг"
+            tr("Клик — выбрать точку, Ctrl/⌘+клик — добавить\nПеретаскивание — вращение, колесо — масштаб, СКМ — сдвиг")
         )
 
         toolbar = QHBoxLayout()

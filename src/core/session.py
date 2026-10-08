@@ -11,6 +11,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.i18n import tr
 from src.core import checksum
 from src.core.checkpoint import table_differs
 from src.core.models import CalibrationTable, Checkpoint
@@ -134,16 +135,16 @@ class RomSession:
 
 def _save_blocker(parser: EcuParser) -> str | None:
     if not parser.rom_bytes:
-        return "ROM не открыт"
+        return tr("ROM не открыт")
     table = parser.checksum_table()
     if table is None:
-        return "Для этой прошивки неизвестна таблица контрольных сумм — сохранять небезопасно"
+        return tr("Для этой прошивки неизвестна таблица контрольных сумм — сохранять небезопасно")
     try:
         valid = checksum.verify(parser.rom_bytes, *table)
     except ValueError as exc:
-        return f"Таблица контрольных сумм не распознана: {exc}"
+        return tr("Таблица контрольных сумм не распознана: {error}", error=exc)
     if not valid:
-        return (
+        return tr(
             "Контрольные суммы исходного файла не сходятся — алгоритм для этого ЭБУ не подходит "
             "(или файл уже был изменён без пересчёта); сохранять небезопасно"
         )

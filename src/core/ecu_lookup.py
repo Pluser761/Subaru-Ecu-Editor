@@ -30,6 +30,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
+from src.i18n import tr
 from src.core.models import Scaling
 from src.core.scaling import eval_expression_array
 
@@ -67,7 +68,7 @@ def axis_position(axis: Sequence[float] | np.ndarray, x: float) -> tuple[int, fl
     """Точка оси и доля до следующей — как 0xBEB8C (ось по неубыванию)."""
     n = len(axis)
     if n == 0:
-        raise ValueError("пустая ось")
+        raise ValueError(tr("пустая ось"))
     if not axis[n - 1] > x:
         return n - 1, 0.0
     for i in range(n - 2, -1, -1):
@@ -137,7 +138,7 @@ def _positions(src: np.ndarray, dst: np.ndarray) -> list[tuple[int, float]]:
         return [axis_position(src, float(x)) for x in dst]
     if len(src) == len(dst):
         return [(i, 0.0) for i in range(len(dst))]
-    raise ValueError("ось немонотонна, а число точек различается")
+    raise ValueError(tr("ось немонотонна, а число точек различается"))
 
 
 def _to_raw(values: np.ndarray, scaling: Scaling | None) -> np.ndarray:

@@ -12,6 +12,8 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 
+from src.i18n import tr
+
 TOTAL = 0x5AA5A55A
 ENTRY_SIZE = 12
 TABLE_NAME = "Checksum Fix"
@@ -37,7 +39,7 @@ class ChecksumEntry:
 def read_entries(rom: bytes | bytearray, address: int, size: int) -> list[ChecksumEntry]:
     """Записи таблицы сумм с вычисленными по образу значениями; ValueError — это не таблица сумм."""
     if address < 0 or address + size > len(rom) or size % ENTRY_SIZE:
-        raise ValueError(f"Таблица контрольных сумм 0x{address:X}+{size} вне образа")
+        raise ValueError(tr("Таблица контрольных сумм 0x{address}+{size} вне образа", address=f"{address:X}", size=size))
     entries: list[ChecksumEntry] = []
     for index, offset in enumerate(range(address, address + size, ENTRY_SIZE)):
         start, end, stored = struct.unpack(">III", rom[offset : offset + ENTRY_SIZE])
@@ -45,7 +47,14 @@ def read_entries(rom: bytes | bytearray, address: int, size: int) -> list[Checks
             expected = TOTAL
         else:
             if end < start or end >= len(rom) or (end - start + 1) % 4:
-                raise ValueError(f"Запись контрольной суммы #{index}: участок 0x{start:X}–0x{end:X} некорректен")
+                raise ValueError(
+                    tr(
+                        "Запись контрольной суммы #{index}: участок 0x{start}–0x{end} некорректен",
+                        index=index,
+                        start=f"{start:X}",
+                        end=f"{end:X}",
+                    )
+                )
             words = struct.unpack(f">{(end - start + 1) // 4}I", rom[start : end + 1])
             expected = (TOTAL - sum(words)) & 0xFFFFFFFF
         entries.append(ChecksumEntry(index, start, end, stored, expected))
@@ -68,5 +77,5 @@ def fix(rom: bytearray, address: int, size: int) -> int:
     if not verify(rom, address, size):
         # Участки перекрываются, но сами суммы лежат вне них — второй проход не нужен; если
         # всё же не сошлось, таблица устроена иначе, и записывать такой образ нельзя
-        raise ValueError("После пересчёта контрольные суммы не сходятся")
+        raise ValueError(tr("После пересчёта контрольные суммы не сходятся"))
     return fixed

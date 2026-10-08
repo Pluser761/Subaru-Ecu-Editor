@@ -7,6 +7,7 @@ import math
 
 from PyQt6.QtCore import QAbstractTableModel, QModelIndex, QObject, Qt, pyqtSignal
 
+from src.i18n import tr
 from src.core.checkpoint import baseline, diff_sign, epsilon_for
 from src.core.models import CalibrationTable, Checkpoint, Scaling
 from src.ui.map.cells import change_tooltip, format_cell_value, parse_cell_value
@@ -224,7 +225,7 @@ class MapTableModel(QAbstractTableModel):
         note = ""
         if self.axis_diff(Qt.Orientation.Horizontal, col) or self.axis_diff(Qt.Orientation.Vertical, row):
             was = format_cell_value(self._checkpoint.values[row][col], self._decimals)
-            note = f"по осям checkpoint; в ячейке было {was}"
+            note = tr("по осям checkpoint; в ячейке было {value}", value=was)
         return change_tooltip(self._values[row][col], self._checkpoint_baseline()[row][col], note, self._decimals)
 
     # --- Цвет ---

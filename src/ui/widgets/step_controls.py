@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import QDoubleSpinBox, QHBoxLayout, QLabel, QWidget
 
+from src.i18n import tr
+
 DEFAULT_FINE_STEP = 0.1
 DEFAULT_COARSE_STEP = 1.0
 # Ячейки хранятся с двумя знаками — шаг мельче 0.01 ничего бы не менял
@@ -19,8 +21,8 @@ class StepControls(QWidget):
         super().__init__(parent)
         self._fine = self._make_spin(DEFAULT_FINE_STEP)
         self._coarse = self._make_spin(DEFAULT_COARSE_STEP)
-        self._fine.setToolTip("Применяется с зажатым Control")
-        self._coarse.setToolTip("Применяется без модификаторов")
+        self._fine.setToolTip(tr("Применяется с зажатым Control"))
+        self._coarse.setToolTip(tr("Применяется без модификаторов"))
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -28,7 +30,7 @@ class StepControls(QWidget):
         self.set_axis_mode(False)
         layout.addWidget(self._caption)
         layout.addWidget(self._fine)
-        layout.addWidget(QLabel("крупный"))
+        layout.addWidget(QLabel(tr("крупный")))
         layout.addWidget(self._coarse)
         layout.addStretch(1)
 
@@ -51,7 +53,7 @@ class StepControls(QWidget):
 
     def set_axis_mode(self, axis: bool) -> None:
         """Подпись: шаги значений таблицы или шаги выделенной оси."""
-        self._caption.setText("Шаг оси: мелкий (Ctrl)" if axis else "Шаг: мелкий (Ctrl)")
+        self._caption.setText(tr("Шаг оси: мелкий (Ctrl)") if axis else tr("Шаг: мелкий (Ctrl)"))
 
     def set_decimals(self, decimals: int) -> None:
         """Точность полей шага — как у значений на экране (bar — 3 знака)."""

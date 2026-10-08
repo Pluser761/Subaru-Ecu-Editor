@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from src.i18n import tr
+
 
 def strictly_monotonic(values: np.ndarray) -> bool:
     """Все значения конечны и строго возрастают или строго убывают."""
@@ -24,7 +26,7 @@ def _interp_1d(xp: np.ndarray, fp: np.ndarray, x: np.ndarray) -> np.ndarray:
         return np.interp(x, xp, fp)
     if len(xp) == len(x):
         return fp.copy()
-    raise ValueError("ось немонотонна, а число точек различается")
+    raise ValueError(tr("ось немонотонна, а число точек различается"))
 
 
 def resample_grid(

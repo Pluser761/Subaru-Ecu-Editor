@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.i18n import tr
 from src.core.transfer import TransferPlan
 
 _NAME_ROLE = int(Qt.ItemDataRole.UserRole)
@@ -39,26 +40,30 @@ class TransferDialog(QDialog):
 
     def __init__(self, plan: TransferPlan, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Перенос карт")
+        self.setWindowTitle(tr("Перенос карт"))
         self.resize(900, 650)
         self._plan = plan
 
         header = QLabel(
-            f"Донор <b>B: {plan.source_id}</b> → цель <b>A: {plan.target_id}</b> (открыта в редакторе). "
-            "Размерность таблиц остаётся как в A; при разной размерности значения B интерполируются."
+            tr(
+                "Донор <b>B: {source}</b> → цель <b>A: {target}</b> (открыта в редакторе). "
+                "Размерность таблиц остаётся как в A; при разной размерности значения B интерполируются.",
+                source=plan.source_id,
+                target=plan.target_id,
+            )
         )
         header.setWordWrap(True)
 
         self._filter = QLineEdit()
-        self._filter.setPlaceholderText("Фильтр по названию или категории")
+        self._filter.setPlaceholderText(tr("Фильтр по названию или категории"))
         self._filter.setClearButtonEnabled(True)
         self._filter.textChanged.connect(self._apply_filter)
 
-        check_all = QPushButton("Выбрать все")
-        check_all.setToolTip("Отметить все доступные таблицы, видимые с учётом фильтра")
+        check_all = QPushButton(tr("Выбрать все"))
+        check_all.setToolTip(tr("Отметить все доступные таблицы, видимые с учётом фильтра"))
         check_all.clicked.connect(lambda: self._set_all(True))
-        uncheck_all = QPushButton("Снять все")
-        uncheck_all.setToolTip("Снять отметку со всех таблиц, видимых с учётом фильтра")
+        uncheck_all = QPushButton(tr("Снять все"))
+        uncheck_all.setToolTip(tr("Снять отметку со всех таблиц, видимых с учётом фильтра"))
         uncheck_all.clicked.connect(lambda: self._set_all(False))
 
         toolbar = QHBoxLayout()
@@ -68,7 +73,7 @@ class TransferDialog(QDialog):
 
         self._tree = QTreeWidget()
         self._tree.setColumnCount(3)
-        self._tree.setHeaderLabels(["Таблица", "B → A", "Действие"])
+        self._tree.setHeaderLabels([tr("Таблица"), "B → A", tr("Действие")])
         tree_header = self._tree.header()
         if tree_header is not None:
             tree_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -80,14 +85,17 @@ class TransferDialog(QDialog):
 
         self._counter = QLabel()
         only = QLabel(
-            f"Только в B: {len(plan.only_source)} · только в A: {len(plan.only_target)} "
-            "(переносить нечего — наведите, чтобы увидеть список)"
+            tr(
+                "Только в B: {source} · только в A: {target} (переносить нечего — наведите, чтобы увидеть список)",
+                source=len(plan.only_source),
+                target=len(plan.only_target),
+            )
         )
         only.setStyleSheet("color: #666;")
         only.setToolTip(self._names_tooltip(plan))
 
         self._buttons = QDialogButtonBox()
-        ok = self._buttons.addButton("Перенести", QDialogButtonBox.ButtonRole.AcceptRole)
+        ok = self._buttons.addButton(tr("Перенести"), QDialogButtonBox.ButtonRole.AcceptRole)
         assert ok is not None
         self._ok = ok
         self._buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
@@ -111,10 +119,10 @@ class TransferDialog(QDialog):
     def _names_tooltip(plan: TransferPlan) -> str:
         def block(title: str, names: list[str]) -> str:
             shown = names[:_MAX_TOOLTIP_NAMES]
-            more = f"\n… ещё {len(names) - len(shown)}" if len(names) > len(shown) else ""
+            more = "\n" + tr("… ещё {n}", n=len(names) - len(shown)) if len(names) > len(shown) else ""
             return f"{title}:\n" + ("\n".join(shown) or "—") + more
 
-        return block("Только в B", plan.only_source) + "\n\n" + block("Только в A", plan.only_target)
+        return block(tr("Только в B"), plan.only_source) + "\n\n" + block(tr("Только в A"), plan.only_target)
 
     def _populate(self) -> None:
         categories: dict[str, QTreeWidgetItem] = {}
@@ -206,7 +214,7 @@ class TransferDialog(QDialog):
     def _update_counter(self) -> None:
         leaves = [i for i in self._leaf_items() if i.flags() & Qt.ItemFlag.ItemIsEnabled]
         checked = sum(1 for i in leaves if i.checkState(0) == Qt.CheckState.Checked)
-        self._counter.setText(f"Выбрано: {checked} из {len(leaves)}")
+        self._counter.setText(tr("Выбрано: {checked} из {total}", checked=checked, total=len(leaves)))
         self._ok.setEnabled(checked > 0)
 
     def selected_names(self) -> list[str]:
@@ -223,20 +231,20 @@ class TransferReportDialog(QDialog):
 
     def __init__(self, markdown: str, path: Path | None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Отчёт о переносе")
+        self.setWindowTitle(tr("Отчёт о переносе"))
         self.resize(1000, 700)
 
         view = QTextBrowser()
         view.setMarkdown(markdown)
 
-        where = QLabel(f"Сохранён: {path}" if path else "Отчёт не удалось сохранить в файл")
+        where = QLabel(tr("Сохранён: {path}", path=path) if path else tr("Отчёт не удалось сохранить в файл"))
         where.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         where.setStyleSheet("color: #666;")
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         if path is not None:
-            open_button = buttons.addButton("Открыть файл", QDialogButtonBox.ButtonRole.ActionRole)
+            open_button = buttons.addButton(tr("Открыть файл"), QDialogButtonBox.ButtonRole.ActionRole)
             if open_button is not None:
                 open_button.clicked.connect(
                     lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))

@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
+from src.i18n import N_, tr
 from src.core.models import AxisDef, Checkpoint, TableDef
 from src.core.interpolation import resample_grid, strictly_monotonic
 from src.core.parser import EcuParser
@@ -42,13 +43,14 @@ def check_compatibility(source: EcuParser, target: EcuParser) -> str | None:
     """None, если B можно переносить в A; иначе текст причины."""
     repo = target.defs_repo or source.defs_repo
     if repo is None or source.xmlid is None or target.xmlid is None:
-        return "Прошивки не опознаны"
+        return tr("Прошивки не опознаны")
     src_base, dst_base = repo.root_base(source.xmlid), repo.root_base(target.xmlid)
     src_cpu, dst_cpu = repo.memmodel(source.xmlid), repo.memmodel(target.xmlid)
     if src_base != dst_base or src_cpu != dst_cpu:
-        return (
-            f"Прошивки несовместимы — B: {src_base or '?'} / {src_cpu or '?'}, "
-            f"A: {dst_base or '?'} / {dst_cpu or '?'}"
+        return tr(
+            "Прошивки несовместимы — B: {source}, A: {target}",
+            source=f"{src_base or '?'} / {src_cpu or '?'}",
+            target=f"{dst_base or '?'} / {dst_cpu or '?'}",
         )
     return None
 
@@ -87,8 +89,8 @@ class TransferCandidate:
             return self.blocked
         interpolated = [a.label for a in (self.x, self.y) if a.mode is AxisMode.INTERPOLATE]
         if interpolated:
-            return "интерполяция " + ", ".join(interpolated)
-        return "как есть"
+            return tr("интерполяция {axes}", axes=", ".join(interpolated))
+        return tr("как есть")
 
 
 @dataclass
@@ -122,26 +124,28 @@ def _plan_axis(
     if n_source == 1 and n_target == 1:
         return plan(AxisMode.NONE), None
     if (n_source == 1) != (n_target == 1):
-        return plan(AxisMode.NONE), f"ось {label}: разная размерность ({n_source} и {n_target})"
+        return plan(AxisMode.NONE), tr("ось {axis}: разная размерность ({source} и {target})", axis=label, source=n_source, target=n_target)
     if is_static_axis(target_axis) or is_static_axis(source_axis) or target_axis is None:
         if n_source != n_target:
-            return plan(AxisMode.STATIC), f"статическая ось {label}: {n_source} и {n_target} точек"
+            return plan(AxisMode.STATIC), tr(
+                "статическая ось {axis}: точек {source} и {target}", axis=label, source=n_source, target=n_target
+            )
         return plan(AxisMode.STATIC), None
     if not is_writable_axis(target_axis):
-        return plan(AxisMode.NONE), f"ось {label} в A не хранится в ROM"
+        return plan(AxisMode.NONE), tr("ось {axis} в A не хранится в ROM", axis=label)
     if source_axis is None or source_axis.storageaddress is None:
-        return plan(AxisMode.NONE), f"у B нет оси {label}"
+        return plan(AxisMode.NONE), tr("у B нет оси {axis}", axis=label)
     if n_source == n_target:
         return plan(AxisMode.COPY), None
     source_values = np.array(read_axis_values(source.rom_bytes, source_axis, n_source))
     if not strictly_monotonic(source_values):
-        return plan(AxisMode.INTERPOLATE), f"ось {label} в B немонотонна"
+        return plan(AxisMode.INTERPOLATE), tr("ось {axis} в B немонотонна", axis=label)
     return plan(AxisMode.INTERPOLATE), None
 
 
 def plan_transfer(source: EcuParser, target: EcuParser) -> TransferPlan:
     if source.definition is None or target.definition is None:
-        raise ValueError("Прошивки не загружены")
+        raise ValueError(tr("Прошивки не загружены"))
     src_tables = _transferable(source.definition.tables)
     dst_tables = _transferable(target.definition.tables)
 
@@ -154,7 +158,7 @@ def plan_transfer(source: EcuParser, target: EcuParser) -> TransferPlan:
         y, y_err = _plan_axis("Y", source, s.y_axis, t.y_axis, s_rows, t_rows)
         blocked = x_err or y_err
         if s.table_type != t.table_type:
-            blocked = f"разный тип таблицы ({s.table_type} и {t.table_type})"
+            blocked = tr("разный тип таблицы ({source} и {target})", source=s.table_type, target=t.table_type)
         candidates.append(
             TransferCandidate(
                 name=name,
@@ -197,10 +201,15 @@ def _index_coords(n: int) -> np.ndarray:
 
 
 class ResultStatus(Enum):
-    COPIED = "перенесена как есть"
-    INTERPOLATED = "интерполирована"
-    RECALCULATED = "пересчитана на новую общую ось"
-    SKIPPED = "пропущена"
+    # Значения — ключи перевода; подпись — title
+    COPIED = N_("перенесена как есть")
+    INTERPOLATED = N_("интерполирована")
+    RECALCULATED = N_("пересчитана на новую общую ось")
+    SKIPPED = N_("пропущена")
+
+    @property
+    def title(self) -> str:
+        return tr(self.value)
 
 
 @dataclass
@@ -272,7 +281,7 @@ def apply_transfer(
     for name in names:
         candidate = by_name.get(name)
         if candidate is None:
-            results[name] = TableResult(name, ResultStatus.SKIPPED, notes=["нет в обеих прошивках"])
+            results[name] = TableResult(name, ResultStatus.SKIPPED, notes=[tr("нет в обеих прошивках")])
         elif candidate.blocked:
             results[name] = TableResult(
                 name,
@@ -315,7 +324,11 @@ def apply_transfer(
                 _, current_want, owner = desired[address]
                 if not np.allclose(current_want, want):
                     notes[name].append(
-                        f"ось {axis_plan.label} общая с «{owner}» — значения интерполированы на её ось"
+                        tr(
+                            "ось {axis} общая с «{owner}» — значения интерполированы на её ось",
+                            axis=axis_plan.label,
+                            owner=owner,
+                        )
                     )
                 continue
             desired[address] = (axis_def, want, name)
@@ -385,7 +398,9 @@ def apply_transfer(
                 if change.before and change.after and (
                     min(change.after) < min(change.before) or max(change.after) > max(change.before)
                 ):
-                    extra.append(f"ось {change.label} шире старой — за её краями продлены крайние значения")
+                    extra.append(
+                        tr("ось {axis} шире старой — за её краями продлены крайние значения", axis=change.label)
+                    )
             results[name] = TableResult(
                 name,
                 ResultStatus.RECALCULATED,
@@ -393,7 +408,7 @@ def apply_transfer(
                 (rows, cols),
                 axes,
                 None,
-                ["общая ось переписана при переносе"] + extra,
+                [tr("общая ось переписана при переносе")] + extra,
             )
 
     ordered = [results[n] for n in names if n in results] + [
@@ -448,25 +463,32 @@ def _fmt_shape(shape: tuple[int, int] | None) -> str:
     return "—" if shape is None else f"{shape[0]}×{shape[1]}"
 
 
+def _md_row(*cells: str) -> str:
+    return "| " + " | ".join(cells) + " |"
+
+
 def render_report(report: TransferReport) -> str:
     lines = [
-        f"# Перенос карт {report.source_id} → {report.target_id}",
+        "# " + tr("Перенос карт {source} → {target}", source=report.source_id, target=report.target_id),
         "",
-        f"- Дата: {report.created:%Y-%m-%d %H:%M:%S}",
-        f"- Цель (A): **{report.target_id}** — `{report.target_path}`",
-        f"- Донор (B): **{report.source_id}** — `{report.source_path}`",
-        "- Метод: размерность A сохраняется. Если размер по оси совпадает — ось и значения B "
-        "переносятся как есть; если отличается — ось A = весь диапазон B, промежуточные точки "
-        "пропорционально по индексам оси B, значения — билинейная интерполяция.",
-        "- Изменения сделаны в образе ROM в памяти; файл A не перезаписан.",
+        "- " + tr("Дата: {date}", date=f"{report.created:%Y-%m-%d %H:%M:%S}"),
+        "- " + tr("Цель (A): {rom}", rom=f"**{report.target_id}** — `{report.target_path}`"),
+        "- " + tr("Донор (B): {rom}", rom=f"**{report.source_id}** — `{report.source_path}`"),
+        "- "
+        + tr(
+            "Метод: размерность A сохраняется. Если размер по оси совпадает — ось и значения B "
+            "переносятся как есть; если отличается — ось A = весь диапазон B, промежуточные точки "
+            "пропорционально по индексам оси B, значения — билинейная интерполяция."
+        ),
+        "- " + tr("Изменения сделаны в образе ROM в памяти; файл A не перезаписан."),
         "",
-        "## Итог",
+        "## " + tr("Итог"),
         "",
-        "| Результат | Таблиц |",
+        "| {} | {} |".format(tr("Результат"), tr("Таблиц")),
         "|---|---:|",
     ]
     for status in ResultStatus:
-        lines.append(f"| {status.value} | {report.count(status)} |")
+        lines.append(f"| {status.title} | {report.count(status)} |")
 
     transferred = [
         r for r in report.results if r.status in (ResultStatus.COPIED, ResultStatus.INTERPOLATED)
@@ -474,12 +496,14 @@ def render_report(report: TransferReport) -> str:
     if transferred:
         lines += [
             "",
-            "## Перенесённые таблицы",
+            "## " + tr("Перенесённые таблицы"),
             "",
-            "Отклонение — максимальная разница между картой A после переноса и картой B "
-            "в точках донора (интерполяция + квантование типа A).",
+            tr(
+                "Отклонение — максимальная разница между картой A после переноса и картой B "
+                "в точках донора (интерполяция + квантование типа A)."
+            ),
             "",
-            "| Таблица | B → A | Результат | Ось X | Ось Y | Макс. отклонение | Примечания |",
+            _md_row(tr("Таблица"), "B → A", tr("Результат"), tr("Ось X"), tr("Ось Y"), tr("Макс. отклонение"), tr("Примечания")),
             "|---|---|---|---|---|---:|---|",
         ]
         for r in transferred:
@@ -487,7 +511,7 @@ def render_report(report: TransferReport) -> str:
             x, y = (r.axes + [AxisChange("X", None, None), AxisChange("Y", None, None)])[:2]
             lines.append(
                 f"| {_md(r.name)} | {_fmt_shape(r.source_shape)} → {_fmt_shape(r.target_shape)} "
-                f"| {r.status.value} | {_fmt_axis(x)} | {_fmt_axis(y)} | {deviation} "
+                f"| {r.status.title} | {_fmt_axis(x)} | {_fmt_axis(y)} | {deviation} "
                 f"| {_md('; '.join(r.notes))} |"
             )
 
@@ -495,12 +519,14 @@ def render_report(report: TransferReport) -> str:
     if recalculated:
         lines += [
             "",
-            "## Пересчитаны из-за общих осей",
+            "## " + tr("Пересчитаны из-за общих осей"),
             "",
-            "Эти таблицы не выбирались, но делят ось с перенесёнными. Их значения "
-            "интерполированы со старой оси на новую, чтобы не съехать.",
+            tr(
+                "Эти таблицы не выбирались, но делят ось с перенесёнными. Их значения "
+                "интерполированы со старой оси на новую, чтобы не съехать."
+            ),
             "",
-            "| Таблица | Ось X | Ось Y | Примечания |",
+            _md_row(tr("Таблица"), tr("Ось X"), tr("Ось Y"), tr("Примечания")),
             "|---|---|---|---|",
         ]
         for r in recalculated:
@@ -509,7 +535,7 @@ def render_report(report: TransferReport) -> str:
 
     skipped = [r for r in report.results if r.status is ResultStatus.SKIPPED]
     if skipped:
-        lines += ["", "## Пропущено", "", "| Таблица | Причина |", "|---|---|"]
+        lines += ["", "## " + tr("Пропущено"), "", _md_row(tr("Таблица"), tr("Причина")), "|---|---|"]
         for r in skipped:
             lines.append(f"| {_md(r.name)} | {_md('; '.join(r.notes))} |")
 

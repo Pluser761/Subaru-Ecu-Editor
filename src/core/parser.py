@@ -4,6 +4,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+from src.i18n import tr
 from src.core.checksum import TABLE_NAME as CHECKSUM_TABLE
 from src.core.ecu_lookup import has_denso_lookup
 from src.core.models import AxisDef, CalibrationTable, MapInfo, RomDefinition, SwitchInfo, TableDef
@@ -58,8 +59,10 @@ class EcuParser:
         definition = repo.identify(data)
         if definition is None:
             raise LookupError(
-                "Не удалось определить ECU definition для этой прошивки "
-                "(нет совпадения internalid / filesize)"
+                tr(
+                    "Не удалось определить ECU definition для этой прошивки "
+                    "(нет совпадения internalid / filesize)"
+                )
             )
         return cls(
             file_path=str(path),
@@ -143,7 +146,7 @@ class EcuParser:
         """Записать байты состояния state («on» / «off») переключателя."""
         table = self.get_table_def(switch_id)
         if table.table_type != "Switch" or state not in table.states or table.storageaddress is None:
-            raise ValueError(f"{switch_id!r}: нет состояния {state!r}")
+            raise ValueError(tr("{switch}: нет состояния {state}", switch=repr(switch_id), state=repr(state)))
         data = bytes.fromhex(table.states[state])
         address = table.storageaddress
         self.rom_bytes[address : address + len(data)] = data

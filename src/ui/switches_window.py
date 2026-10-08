@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.i18n import N_, tr
 from src.core.models import SwitchInfo
 from src.ui.widgets.flow_layout import FlowLayout
 from src.ui.widgets.toggle_switch import ToggleSwitch
@@ -22,7 +23,7 @@ from src.ui.widgets.toggle_switch import ToggleSwitch
 CARD_WIDTH = 252
 CARD_HEIGHT = 96
 CATEGORY_TITLES = {
-    "Diagnostic Trouble Codes": "Ошибки (DTC)",
+    "Diagnostic Trouble Codes": N_("Ошибки (DTC)"),
     "OBD-II": "OBD-II",
 }
 # Плашка: обычная / выключена / изменена с открытия файла / неизвестные байты
@@ -32,7 +33,8 @@ _CARD_STYLE = {
     "unknown": "background: #f2f2f7; border: 1px dashed #b8b8c0;",
 }
 _CHANGED_BORDER = "border: 2px solid #c05000;"
-_FILTERS = ("Все", "Выключенные", "Изменённые")
+# Режимы фильтра (ключи); подписи кнопок — tr(режим)
+_FILTERS = (N_("Все"), N_("Выключенные"), N_("Изменённые"))
 
 
 class SwitchCard(QFrame):
@@ -88,13 +90,13 @@ class SwitchCard(QFrame):
         style = _CARD_STYLE[kind] + (_CHANGED_BORDER if self.changed else "")
         self.setStyleSheet(f"QFrame#card {{ {style} border-radius: 10px; }}")
         if not known:
-            status = f"неизвестные байты {info.raw}"
+            status = tr("неизвестные байты {raw}", raw=info.raw)
         elif info.state == "off":
-            status = "выключена" if info.code else "выключено"
+            status = tr("выключена") if info.code else tr("выключено")
         else:
-            status = "включена" if info.code else "включено"
+            status = tr("включена") if info.code else tr("включено")
         if self.changed and known:
-            status += " · изменено"
+            status += " · " + tr("изменено")
         self._status.setText(status)
         tip = info.name if not info.code else f"{info.code} — {info.name}"
         self.setToolTip(f"{tip}\n\n{info.description}" if info.description else tip)
@@ -116,7 +118,7 @@ class SwitchesWindow(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
-        self.setWindowTitle("Ошибки и переключатели")
+        self.setWindowTitle(tr("Ошибки и переключатели"))
         self.resize(860, 640)
         self._cards: dict[str, SwitchCard] = {}
         self._sections: list[tuple[QLabel, QWidget, list[SwitchCard]]] = []
@@ -126,8 +128,7 @@ class SwitchesWindow(QWidget):
         self._summary = QLabel()
         self._summary.setStyleSheet("color: #666;")
         warning = QLabel(
-            "⚠ Выключенная ошибка не исправляет неисправность, а прячет её: ЭБУ перестаёт "
-            "сообщать о проблеме."
+            tr("⚠ Выключенная ошибка не исправляет неисправность, а прячет её: ЭБУ перестаёт сообщать о проблеме.")
         )
         warning.setWordWrap(True)
         warning.setStyleSheet(
@@ -135,14 +136,14 @@ class SwitchesWindow(QWidget):
         )
 
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Поиск: код или название (P013, O2, AVCS…)")
+        self._search.setPlaceholderText(tr("Поиск: код или название (P013, O2, AVCS…)"))
         self._search.setClearButtonEnabled(True)
         self._search.textChanged.connect(self._apply_filter)
         self._filter = QButtonGroup(self)
         filters = QHBoxLayout()
         filters.setSpacing(0)
         for i, name in enumerate(_FILTERS):
-            button = QPushButton(name)
+            button = QPushButton(tr(name))
             button.setCheckable(True)
             button.setChecked(i == 0)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -173,8 +174,8 @@ class SwitchesWindow(QWidget):
 
     def set_switches(self, switches: list[SwitchInfo], original: dict[str, str | None], rom_name: str) -> None:
         """Показать переключатели прошивки; original — состояния на момент открытия файла."""
-        self._title.setText(f"Ошибки и переключатели · {rom_name}")
-        self.setWindowTitle(f"Ошибки и переключатели — {rom_name}")
+        self._title.setText(tr("Ошибки и переключатели · {rom}", rom=rom_name))
+        self.setWindowTitle(tr("Ошибки и переключатели — {rom}", rom=rom_name))
         while self._content_layout.count():
             item = self._content_layout.takeAt(0)
             if item is not None and item.widget() is not None:
@@ -184,7 +185,7 @@ class SwitchesWindow(QWidget):
         for info in switches:
             by_category.setdefault(info.category, []).append(info)
         for category, items in by_category.items():
-            header = QLabel(CATEGORY_TITLES.get(category, category))
+            header = QLabel(tr(CATEGORY_TITLES[category]) if category in CATEGORY_TITLES else category)
             header.setStyleSheet("font-size: 13px; font-weight: 700; color: #3a3a3c; padding-top: 4px;")
             grid = QWidget()
             flow = FlowLayout(grid, spacing=8)
@@ -224,4 +225,4 @@ class SwitchesWindow(QWidget):
         cards = list(self._cards.values())
         off = sum(c.info.state == "off" for c in cards)
         changed = sum(c.changed for c in cards)
-        self._summary.setText(f"Всего {len(cards)} · выключено {off} · изменено с открытия {changed}")
+        self._summary.setText(tr("Всего {total} · выключено {off} · изменено с открытия {changed}", total=len(cards), off=off, changed=changed))

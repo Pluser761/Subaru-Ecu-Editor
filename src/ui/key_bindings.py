@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from enum import Enum
 
+from src.i18n import N_, tr
+
 from PyQt6.QtCore import QObject, Qt, pyqtSignal
 from PyQt6.QtGui import QKeyEvent, QKeySequence
 
@@ -40,8 +42,8 @@ class Action(Enum):
 
 
 ACTION_TITLES = {
-    Action.INCREASE: "Увеличить значение",
-    Action.DECREASE: "Уменьшить значение",
+    Action.INCREASE: N_("Увеличить значение"),
+    Action.DECREASE: N_("Уменьшить значение"),
 }
 
 # «+» и «−» основной клавиатуры без Shift
@@ -72,7 +74,7 @@ class KeyBindings(QObject):
 
     def set_keys(self, keys: dict[Action, int]) -> None:
         if len(set(keys.values())) != len(keys):
-            raise ValueError("Одна клавиша назначена на несколько действий")
+            raise ValueError(tr("Одна клавиша назначена на несколько действий"))
         if keys != self._keys:
             self._keys = dict(keys)
             self.changed.emit()

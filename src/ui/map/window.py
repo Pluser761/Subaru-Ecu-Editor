@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.i18n import plural, tr
 from src.core.models import CalibrationTable, Checkpoint
 from src.ui.key_bindings import Action, KeyBindings, is_fine_modifier
 from src.ui.map.cells import describe_shape
@@ -142,7 +143,7 @@ class MapWindow(QWidget):
         info_btn = QToolButton()
         info_btn.setText("ⓘ")
         info_btn.setAutoRaise(True)
-        info_btn.setToolTip("Описание карты (F1)")
+        info_btn.setToolTip(tr("Описание карты (F1)"))
         info_btn.setStyleSheet("font-size: 15px; color: #666;")
         info_btn.clicked.connect(self.show_info)
         QShortcut(QKeySequence(Qt.Key.Key_F1), self, self.show_info)
@@ -155,10 +156,12 @@ class MapWindow(QWidget):
         layout.addLayout(title_row)
         layout.addWidget(self._meta)
         layout.addWidget(self._shared_axes)
-        checkpoint_btn = QPushButton("Set checkpoint")
+        checkpoint_btn = QPushButton(tr("Установить checkpoint"))
         checkpoint_btn.setToolTip(
-            "Запомнить текущие значения как точку отсчёта. Изменённые после этого ячейки "
-            "обводятся: красным — больше, синим — меньше"
+            tr(
+                "Запомнить текущие значения как точку отсчёта. Изменённые после этого ячейки "
+                "обводятся: красным — больше, синим — меньше"
+            )
         )
         checkpoint_btn.clicked.connect(self._set_checkpoint)
         edit_row = QHBoxLayout()
@@ -223,7 +226,7 @@ class MapWindow(QWidget):
             self._table.set_table(None)
             self._set_axis_titles("", "")
             cp = checkpoint.values[0][0] if checkpoint and checkpoint.values and checkpoint.values[0] else None
-            self._constant.set_constant(table.values[0][0], table.unit or "Значение", cp, table.decimals)
+            self._constant.set_constant(table.values[0][0], table.unit or tr("Значение"), cp, table.decimals)
             self._pages.setCurrentWidget(self._constant)
         else:
             self._mode = _Mode.ROW if table.cols == 1 else _Mode.TABLE
@@ -319,11 +322,11 @@ class MapWindow(QWidget):
         if self._table.has_axis_selection():
             count = self._table.adjust_axis_selection(delta)
             if count:
-                self.operation_info.emit(f"{delta:+.2f} → точек оси: {count}")
+                self.operation_info.emit(tr("{delta} → точек оси: {count}", delta=f"{delta:+g}", count=count))
             return True
         count = self._table.adjust_selected(delta)
         if count:
-            self.operation_info.emit(f"{delta:+.2f} → ячеек: {count}")
+            self.operation_info.emit(tr("{delta} → ячеек: {count}", delta=f"{delta:+g}", count=count))
         return True
 
     def eventFilter(self, obj: QObject | None, event: QEvent | None) -> bool:
@@ -442,13 +445,14 @@ class MapWindow(QWidget):
         tips: list[str] = []
         for axis, names in (("X", x_shared), ("Y", y_shared)):
             if names:
-                parts.append(f"ось {axis} — ещё {len(names)} {_tables_word(len(names))}")
-                tips.append(f"Ось {axis} общая с:\n" + "\n".join(f"  • {n}" for n in names))
+                parts.append(tr("ось {axis} — ещё {n} {tables}", axis=axis, n=len(names), tables=_tables_word(len(names))))
+                tips.append(tr("Ось {axis} общая с:", axis=axis) + "\n" + "\n".join(f"  • {n}" for n in names))
         if parts:
-            self._shared_axes.setText("⚠ Общая " + "; ".join(parts))
+            self._shared_axes.setText(tr("⚠ Общая {parts}", parts="; ".join(parts)))
             self._shared_axes.setToolTip(
                 "\n\n".join(tips)
-                + "\n\nПравка общей оси меняет её и в этих таблицах; их значения не пересчитываются."
+                + "\n\n"
+                + tr("Правка общей оси меняет её и в этих таблицах; их значения не пересчитываются.")
             )
         else:
             self._shared_axes.setText("")
@@ -463,16 +467,12 @@ class MapWindow(QWidget):
         else:
             return
         self.checkpoint_set.emit(self._map_id)
-        self.operation_info.emit("Checkpoint установлен: подсветка изменений сброшена")
+        self.operation_info.emit(tr("Checkpoint установлен: подсветка изменений сброшена"))
 
 
 def _tables_word(n: int) -> str:
-    """Согласование: 1 таблица, 2 таблицы, 5 таблиц."""
-    if n % 10 == 1 and n % 100 != 11:
-        return "таблица"
-    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        return "таблицы"
-    return "таблиц"
+    """Согласование: 1 таблица, 2 таблицы, 5 таблиц (по-английски — table / tables)."""
+    return plural(n, ("таблица", "таблицы", "таблиц"), ("table", "tables"))
 
 
 def _transpose(values: list[list[float]]) -> list[list[float]]:

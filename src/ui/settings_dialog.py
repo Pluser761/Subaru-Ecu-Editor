@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.i18n import tr
 from src.ui.key_bindings import ACTION_TITLES, DEFAULT_KEYS, Action, KeyBindings, key_name
 from src.ui.widgets.key_capture import KeyCaptureButton
 
@@ -20,7 +21,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, bindings: KeyBindings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Настройки")
+        self.setWindowTitle(tr("Настройки"))
         self._bindings = bindings
 
         self._buttons: dict[Action, KeyCaptureButton] = {}
@@ -29,19 +30,21 @@ class SettingsDialog(QDialog):
             button = KeyCaptureButton(bindings.key(action))
             button.key_captured.connect(lambda _key: self._validate())
             self._buttons[action] = button
-            form.addRow(ACTION_TITLES[action], button)
+            form.addRow(tr(ACTION_TITLES[action]), button)
 
         hint = QLabel(
-            "Кликните по кнопке и нажмите клавишу. Модификаторы не записываются: "
-            "без них применяется крупный шаг, с зажатым Control — мелкий."
+            tr(
+                "Кликните по кнопке и нажмите клавишу. Модификаторы не записываются: "
+                "без них применяется крупный шаг, с зажатым Control — мелкий."
+            )
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #666;")
 
-        reset = QPushButton("По умолчанию")
+        reset = QPushButton(tr("По умолчанию"))
         reset.clicked.connect(self._reset_defaults)
 
-        keys_box = QGroupBox("Клавиши")
+        keys_box = QGroupBox(tr("Клавиши"))
         keys_layout = QVBoxLayout(keys_box)
         keys_layout.addLayout(form)
         keys_layout.addWidget(hint)
@@ -88,8 +91,12 @@ class SettingsDialog(QDialog):
             return True
         first, second, key = conflict
         self._error.setText(
-            f"Клавиша «{key_name(key)}» назначена и на «{ACTION_TITLES[first]}», "
-            f"и на «{ACTION_TITLES[second]}»"
+            tr(
+                "Клавиша «{key}» назначена и на «{first}», и на «{second}»",
+                key=key_name(key),
+                first=tr(ACTION_TITLES[first]),
+                second=tr(ACTION_TITLES[second]),
+            )
         )
         self._error.show()
         if ok_button is not None:

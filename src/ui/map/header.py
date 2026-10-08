@@ -9,6 +9,7 @@ from PyQt6.QtCore import QEvent, QObject, QRect, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QKeyEvent, QKeySequence, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import QApplication, QHeaderView, QLineEdit
 
+from src.i18n import tr
 from src.core.matrix_clipboard import format_axis, parse_axis, validate_axis_paste
 from src.ui.key_bindings import PHYSICAL_CONTROL
 from src.ui.map.cells import (
@@ -64,7 +65,7 @@ class AxisHeaderView(QHeaderView):
 
     def _toggle_axis_point(self, section: int) -> None:
         if self._table.map_model.is_static(self.orientation()):
-            self._table.operation_error.emit(STATIC_AXIS_MESSAGE)
+            self._table.operation_error.emit(tr(STATIC_AXIS_MESSAGE))
             return
         # Точки оси и ячейки не выделяются одновременно: шаг меняет что-то одно
         self._table.clearSelection()
@@ -143,7 +144,7 @@ class AxisHeaderView(QHeaderView):
             return
         clipboard = QApplication.clipboard()
         if clipboard is None:
-            self._table.operation_error.emit(CLIPBOARD_UNAVAILABLE_MESSAGE)
+            self._table.operation_error.emit(tr(CLIPBOARD_UNAVAILABLE_MESSAGE))
             return
         model = self._table.map_model
         labels = model.labels(self.orientation())
@@ -158,20 +159,20 @@ class AxisHeaderView(QHeaderView):
     def paste_axis(self) -> None:
         model = self._table.map_model
         if model.is_static(self.orientation()):
-            self._table.operation_error.emit(STATIC_AXIS_MESSAGE)
+            self._table.operation_error.emit(tr(STATIC_AXIS_MESSAGE))
             return
         clipboard = QApplication.clipboard()
         if clipboard is None:
-            self._table.operation_error.emit(CLIPBOARD_UNAVAILABLE_MESSAGE)
+            self._table.operation_error.emit(tr(CLIPBOARD_UNAVAILABLE_MESSAGE))
             return
         try:
             values = parse_axis(clipboard.text())
         except ValueError:
-            self._table.operation_error.emit(NON_NUMERIC_CLIPBOARD_MESSAGE)
+            self._table.operation_error.emit(tr(NON_NUMERIC_CLIPBOARD_MESSAGE))
             return
         sections = self._sections_for_clipboard()
         if not sections:
-            self._table.operation_error.emit("Нет выбранных заголовков для вставки")
+            self._table.operation_error.emit(tr("Нет выбранных заголовков для вставки"))
             return
         error = validate_axis_paste(len(values), target_count=len(sections))
         if error:
@@ -179,7 +180,7 @@ class AxisHeaderView(QHeaderView):
             return
         for section, value in zip(sections, values, strict=True):
             model.setHeaderData(section, self.orientation(), value, Qt.ItemDataRole.EditRole)
-        self._table.operation_info.emit(f"Вставлено в ось: {len(sections)}")
+        self._table.operation_info.emit(tr("Вставлено в ось: {n}", n=len(sections)))
 
     def _sections_for_clipboard(self) -> list[int]:
         """Выделенные точки оси, иначе столбцы/строки выделенных ячеек, иначе секция под курсором."""
@@ -198,7 +199,7 @@ class AxisHeaderView(QHeaderView):
     def _start_edit(self, section: int) -> None:
         self._cancel_edit()
         if self._table.map_model.is_static(self.orientation()):
-            self._table.operation_error.emit(STATIC_AXIS_MESSAGE)
+            self._table.operation_error.emit(tr(STATIC_AXIS_MESSAGE))
             return
         if self.orientation() == Qt.Orientation.Horizontal:
             geo = QRect(self.sectionViewportPosition(section), 0, self.sectionSize(section), self.height())

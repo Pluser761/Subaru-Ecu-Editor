@@ -14,6 +14,8 @@ from PyQt6.QtWidgets import (
 )
 
 from src.core.units import UnitSystem
+from src.i18n import Language, tr
+from src.i18n import language as current_language
 from src.ui.editor_view import EditorView
 from src.ui.key_bindings import KeyBindings
 from src.ui.settings_dialog import SettingsDialog
@@ -35,7 +37,7 @@ class MainWindow(QMainWindow):
         self.key_bindings = KeyBindings(self)
         self.editor_view = EditorView(self.key_bindings)
 
-        tools_placeholder = QLabel("Tools — скоро (интерполятор и др.)")
+        tools_placeholder = QLabel(tr("Инструменты — скоро (интерполятор и др.)"))
         tools_placeholder.setStyleSheet("color: #888; padding: 24px; font-size: 13px;")
 
         self._stack = QStackedWidget()
@@ -48,7 +50,7 @@ class MainWindow(QMainWindow):
         self._status_line = StatusLine()
         self._status_bar.addWidget(self._status_line, 1)
         self.setStatusBar(self._status_bar)
-        self.set_status("Готово")
+        self.set_status(tr("Готово"))
 
         self._build_menu()
 
@@ -62,6 +64,7 @@ class MainWindow(QMainWindow):
         self.on_transfer_maps: Callable[[], None] | None = None
         self.on_show_switches: Callable[[], None] | None = None
         self.on_unit_system: Callable[[UnitSystem], None] | None = None
+        self.on_language: Callable[[Language], None] | None = None
         # Можно ли закрыть окно (несохранённые правки); False — отменить закрытие
         self.on_close_requested: Callable[[], bool] | None = None
         # Перед закрытием окна (сохранение настроек)
@@ -71,25 +74,25 @@ class MainWindow(QMainWindow):
         menu = self.menuBar()
         assert menu is not None
 
-        file_menu = menu.addMenu("&File")
+        file_menu = menu.addMenu(tr("&Файл"))
         assert file_menu is not None
-        open_action = QAction("&Open ROM…", self)
+        open_action = QAction(tr("&Открыть ROM…"), self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._emit_open)
         file_menu.addAction(open_action)
 
-        save_action = QAction("&Save ROM", self)
+        save_action = QAction(tr("&Сохранить ROM"), self)
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self._emit_save)
         file_menu.addAction(save_action)
 
-        save_as_action = QAction("Save ROM &As…", self)
+        save_as_action = QAction(tr("Сохранить ROM &как…"), self)
         save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
         save_as_action.triggered.connect(self._emit_save_as)
         file_menu.addAction(save_as_action)
 
         file_menu.addSeparator()
-        settings_action = QAction("Settings…", self)
+        settings_action = QAction(tr("Настройки…"), self)
         # У Preferences нет стандартной клавиши на Windows — тогда Ctrl+,
         if QKeySequence.keyBindings(QKeySequence.StandardKey.Preferences):
             settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
@@ -101,30 +104,30 @@ class MainWindow(QMainWindow):
         file_menu.addAction(settings_action)
 
         file_menu.addSeparator()
-        quit_action = QAction("&Quit", self)
+        quit_action = QAction(tr("&Выход"), self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
-        view_menu = menu.addMenu("&View")
+        view_menu = menu.addMenu(tr("&Вид"))
         assert view_menu is not None
-        editor_action = QAction("&Editor", self)
+        editor_action = QAction(tr("&Редактор"), self)
         editor_action.triggered.connect(self._emit_show_editor)
         view_menu.addAction(editor_action)
 
-        tools_action = QAction("&Tools", self)
+        tools_action = QAction(tr("&Инструменты"), self)
         tools_action.triggered.connect(self._emit_show_tools)
         view_menu.addAction(tools_action)
 
         view_menu.addSeparator()
         # Единицы на экране: как в описаниях или метрические — для всех величин сразу
-        units_menu = view_menu.addMenu("Единицы")
+        units_menu = view_menu.addMenu(tr("Единицы"))
         assert units_menu is not None
         self._unit_actions: dict[UnitSystem, QAction] = {}
         group = QActionGroup(self)
         for system, title in (
-            (UnitSystem.DEFINITIONS, "Как в описаниях (psi, °F, mph)"),
-            (UnitSystem.METRIC, "Метрические (bar, °C, km/h)"),
+            (UnitSystem.DEFINITIONS, tr("Как в описаниях (psi, °F, mph)")),
+            (UnitSystem.METRIC, tr("Метрические (bar, °C, km/h)")),
         ):
             action = QAction(title, self)
             action.setCheckable(True)
@@ -134,9 +137,23 @@ class MainWindow(QMainWindow):
             self._unit_actions[system] = action
         self._unit_actions[UnitSystem.DEFINITIONS].setChecked(True)
 
+        # Язык интерфейса — на родном языке каждого пункта, чтобы найти и в незнакомом
+        language_menu = view_menu.addMenu("Язык / Language")
+        assert language_menu is not None
+        self._language_actions: dict[Language, QAction] = {}
+        language_group = QActionGroup(self)
+        for lang, title in ((Language.RU, "Русский"), (Language.EN, "English")):
+            action = QAction(title, self)
+            action.setCheckable(True)
+            action.setChecked(lang is current_language())
+            action.triggered.connect(lambda _checked, value=lang: self._emit_language(value))
+            language_group.addAction(action)
+            language_menu.addAction(action)
+            self._language_actions[lang] = action
+
         view_menu.addSeparator()
         # Окно графика: включено — показывается само для карт с графиком (2D/3D)
-        self.graph_action = QAction("&Graph Window", self)
+        self.graph_action = QAction(tr("Окно &графика"), self)
         self.graph_action.setCheckable(True)
         self.graph_action.setChecked(True)
         self.graph_action.setShortcut(QKeySequence("Ctrl+G"))
@@ -144,13 +161,13 @@ class MainWindow(QMainWindow):
         self.editor_view.graph_closed.connect(lambda: self.graph_action.setChecked(False))
         view_menu.addAction(self.graph_action)
 
-        maps_menu = menu.addMenu("&Maps")
+        maps_menu = menu.addMenu(tr("&Карты"))
         assert maps_menu is not None
-        transfer_action = QAction("Transfer Maps from ROM…", self)
+        transfer_action = QAction(tr("Перенести карты из другой прошивки…"), self)
         transfer_action.triggered.connect(self._emit_transfer_maps)
         maps_menu.addAction(transfer_action)
 
-        switches_action = QAction("Ошибки и переключатели…", self)
+        switches_action = QAction(tr("Ошибки и переключатели…"), self)
         switches_action.setShortcut(QKeySequence("Ctrl+E"))
         switches_action.triggered.connect(self._emit_show_switches)
         maps_menu.addAction(switches_action)
@@ -172,11 +189,11 @@ class MainWindow(QMainWindow):
 
     def show_editor(self) -> None:
         self._stack.setCurrentIndex(0)
-        self.set_status("Editor")
+        self.set_status(tr("Редактор"))
 
     def show_tools(self) -> None:
         self._stack.setCurrentIndex(1)
-        self.set_status("Tools")
+        self.set_status(tr("Инструменты"))
 
     def set_status(self, text: str) -> None:
         self._status_line.show_info(text)
@@ -198,9 +215,9 @@ class MainWindow(QMainWindow):
     def ask_save_rom_path(self, suggested: str) -> str | None:
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save ROM",
+            tr("Сохранить ROM"),
             suggested,
-            "ROM files (*.bin *.hex);;All files (*)",
+            tr("Файлы ROM (*.bin *.hex);;Все файлы (*)"),
         )
         return path or None
 
@@ -208,9 +225,9 @@ class MainWindow(QMainWindow):
         """«save» / «discard» / «cancel» — что делать с несохранёнными правками ROM."""
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("Несохранённые правки")
-        box.setText("В прошивке есть несохранённые правки.")
-        box.setInformativeText("Сохранить их перед продолжением?")
+        box.setWindowTitle(tr("Несохранённые правки"))
+        box.setText(tr("В прошивке есть несохранённые правки."))
+        box.setInformativeText(tr("Сохранить их перед продолжением?"))
         box.setStandardButtons(
             QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel
         )
@@ -225,18 +242,18 @@ class MainWindow(QMainWindow):
     def ask_open_rom_path(self) -> str | None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Open ROM",
+            tr("Открыть ROM"),
             "",
-            "ROM files (*.bin *.hex);;All files (*)",
+            tr("Файлы ROM (*.bin *.hex);;Все файлы (*)"),
         )
         return path or None
 
     def ask_donor_rom_path(self) -> str | None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Донорская прошивка (B)",
+            tr("Донорская прошивка (B)"),
             "",
-            "ROM files (*.bin *.hex);;All files (*)",
+            tr("Файлы ROM (*.bin *.hex);;Все файлы (*)"),
         )
         return path or None
 
@@ -266,6 +283,19 @@ class MainWindow(QMainWindow):
 
     def set_unit_system_checked(self, system: UnitSystem) -> None:
         self._unit_actions[system].setChecked(True)
+
+    def ask_restart_for_language(self) -> bool:
+        """Язык меняется после перезапуска: перезапустить сейчас?"""
+        answer = QMessageBox.question(
+            self,
+            tr("Язык интерфейса"),
+            tr("Язык интерфейса изменится после перезапуска. Перезапустить сейчас?"),
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _emit_language(self, language: Language) -> None:
+        if self.on_language:
+            self.on_language(language)
 
     def _emit_unit_system(self, system: UnitSystem) -> None:
         if self.on_unit_system:
