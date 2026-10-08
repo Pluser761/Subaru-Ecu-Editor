@@ -12,6 +12,7 @@ from src.ui.app_settings import AppSettings
 from src.ui.main_window import MainWindow
 from src.ui.map.cells import describe_shape
 from src.ui.map.window import MapWindow
+from src.ui.switches_window import SwitchesWindow
 
 DEFAULT_DEFS = Path(__file__).resolve().parents[2] / "definitions" / "ecu_defs.xml"
 
@@ -38,12 +39,16 @@ class MainPresenter:
         # Куда пишет Save; None — ещё не сохраняли в этой сессии: первый Save спросит путь,
         # чтобы случайно не перезаписать стоковую прошивку
         self._save_path: str | None = None
+        # Окно «Ошибки и переключатели» и состояния переключателей на момент открытия файла
+        self._switches_window: SwitchesWindow | None = None
+        self._switch_original: dict[str, str | None] = {}
 
         window.on_open_rom = self.open_rom
         window.on_save_rom = self.save_rom
         window.on_save_rom_as = self.save_rom_as
         window.on_close_requested = self._confirm_discard
         window.on_transfer_maps = self.transfer_maps
+        window.on_show_switches = self.show_switches
         window.on_show_editor = window.show_editor
         window.on_show_tools = window.show_tools
 
@@ -125,6 +130,9 @@ class MainPresenter:
         self._window.editor_view.close_all_maps()
         self._session = RomSession(parser)
         self._save_path = None
+        self._switch_original = {s.id: s.state for s in parser.list_switches()}
+        if self._switches_window is not None and self._switches_window.isVisible():
+            self._fill_switches()
         self._to_check.clear()
         self._window.editor_view.set_changed_maps(set())
         self._window.set_rom_path(path)
@@ -238,6 +246,46 @@ class MainPresenter:
         if answer == "save":
             return self.save_rom()
         return answer == "discard"
+
+    def show_switches(self) -> None:
+        """Окно «Ошибки и переключатели» (таблицы Switch: DTC, OBD-II…)."""
+        if not self._parser.file_path:
+            self._window.show_info("Ошибки и переключатели", "Сначала откройте ROM.")
+            return
+        if self._switches_window is None:
+            self._switches_window = SwitchesWindow(self._window)
+            self._switches_window.switch_toggled.connect(self.on_switch_toggled)
+            # По центру экрана, а не по центру узкого главного окна (иначе уезжает за край)
+            screen = self._window.screen()
+            if screen is not None:
+                area = screen.availableGeometry()
+                size = self._switches_window.size()
+                self._switches_window.move(
+                    area.x() + (area.width() - size.width()) // 2, area.y() + (area.height() - size.height()) // 2
+                )
+        self._fill_switches()
+        self._switches_window.show()
+        self._switches_window.raise_()
+        self._switches_window.activateWindow()
+
+    def _fill_switches(self) -> None:
+        assert self._switches_window is not None
+        self._switches_window.set_switches(
+            self._parser.list_switches(), self._switch_original, Path(self._parser.file_path or "").name
+        )
+
+    def on_switch_toggled(self, switch_id: str, state: str) -> None:
+        try:
+            self._session.write_switch(switch_id, state)
+        except ValueError as exc:
+            self._window.set_error(f"Не удалось переключить: {exc}")
+        info = self._parser.switch_info(switch_id)
+        if self._switches_window is not None:
+            self._switches_window.update_switch(info)
+        self._window.setWindowModified(self._session.dirty)
+        label = info.code or info.name
+        word = {"on": "включена", "off": "выключена"}.get(info.state or "", "?")
+        self._window.set_status(f"{label}: {word}")
 
     def select_map(self, map_id: str) -> None:
         """Открыть окно карты или поднять уже открытое (фокус остаётся в дереве)."""

@@ -59,6 +59,7 @@ class MainWindow(QMainWindow):
         self.on_show_editor: Callable[[], None] | None = None
         self.on_show_tools: Callable[[], None] | None = None
         self.on_transfer_maps: Callable[[], None] | None = None
+        self.on_show_switches: Callable[[], None] | None = None
         # Можно ли закрыть окно (несохранённые правки); False — отменить закрытие
         self.on_close_requested: Callable[[], bool] | None = None
         # Перед закрытием окна (сохранение настроек)
@@ -128,6 +129,11 @@ class MainWindow(QMainWindow):
         transfer_action = QAction("Transfer Maps from ROM…", self)
         transfer_action.triggered.connect(self._emit_transfer_maps)
         maps_menu.addAction(transfer_action)
+
+        switches_action = QAction("Ошибки и переключатели…", self)
+        switches_action.setShortcut(QKeySequence("Ctrl+E"))
+        switches_action.triggered.connect(self._emit_show_switches)
+        maps_menu.addAction(switches_action)
 
     def closeEvent(self, event: QCloseEvent | None) -> None:
         if self.on_close_requested is not None and not self.on_close_requested():
@@ -237,6 +243,10 @@ class MainWindow(QMainWindow):
     def _emit_save(self) -> None:
         if self.on_save_rom:
             self.on_save_rom()
+
+    def _emit_show_switches(self) -> None:
+        if self.on_show_switches:
+            self.on_show_switches()
 
     def _emit_save_as(self) -> None:
         if self.on_save_rom_as:

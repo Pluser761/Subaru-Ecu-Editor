@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from pathlib import Path
 
 from src.core.checksum import TABLE_NAME as CHECKSUM_TABLE
 from src.core.ecu_lookup import has_denso_lookup
-from src.core.models import AxisDef, CalibrationTable, MapInfo, RomDefinition, TableDef
+from src.core.models import AxisDef, CalibrationTable, MapInfo, RomDefinition, SwitchInfo, TableDef
 from src.core.rom_io import (
     axis_title,
     is_writable_axis,
@@ -17,6 +18,10 @@ from src.core.rom_io import (
     write_table_cell,
 )
 from src.core.xml_reader import EDITABLE_TABLE_TYPES, EcuDefsRepository
+
+
+# «(P0030) FRONT O2 SENSOR RANGE/PERF» → код и название
+_DTC_CODE = re.compile(r"^\((P[0-9A-F]{4})\)\s*(.*)$")
 
 
 class EcuParser:
@@ -101,6 +106,52 @@ class EcuParser:
         if self._ecu_interpolation is None:
             self._ecu_interpolation = has_denso_lookup(self.rom_bytes)
         return self._ecu_interpolation
+
+    # --- Переключатели (Switch): ошибки DTC и исправления ---
+
+    def list_switches(self) -> list[SwitchInfo]:
+        """Переключатели этой прошивки (с адресом и вариантами on/off), кроме таблицы
+        контрольных сумм; по категории и имени."""
+        if self.definition is None:
+            return []
+        switches = [
+            self.switch_info(name)
+            for name, table in self.definition.tables.items()
+            if table.table_type == "Switch"
+            and table.name != CHECKSUM_TABLE
+            and table.storageaddress is not None
+            and {"on", "off"} <= set(table.states)
+        ]
+        return sorted(switches, key=lambda s: (s.category, s.code or s.name))
+
+    def switch_info(self, switch_id: str) -> SwitchInfo:
+        table = self.get_table_def(switch_id)
+        raw = self._switch_bytes(table).hex()
+        state = next((name for name, data in table.states.items() if data == raw), None)
+        match = _DTC_CODE.match(table.name)
+        return SwitchInfo(
+            id=switch_id,
+            name=match.group(2).strip() if match else table.name.strip(),
+            category=table.category,
+            description=table.description.strip(),
+            code=match.group(1) if match else "",
+            state=state,
+            raw=raw,
+        )
+
+    def write_switch(self, switch_id: str, state: str) -> None:
+        """Записать байты состояния state («on» / «off») переключателя."""
+        table = self.get_table_def(switch_id)
+        if table.table_type != "Switch" or state not in table.states or table.storageaddress is None:
+            raise ValueError(f"{switch_id!r}: нет состояния {state!r}")
+        data = bytes.fromhex(table.states[state])
+        address = table.storageaddress
+        self.rom_bytes[address : address + len(data)] = data
+
+    def _switch_bytes(self, table: TableDef) -> bytes:
+        size = len(bytes.fromhex(next(iter(table.states.values()))))
+        assert table.storageaddress is not None
+        return bytes(self.rom_bytes[table.storageaddress : table.storageaddress + size])
 
     def checksum_table(self) -> tuple[int, int] | None:
         """(адрес, размер в байтах) таблицы контрольных сумм из definitions или None."""

@@ -116,6 +116,11 @@ class RomSession:
         self.dirty = True
         return AxisWrite(stored=stored, shared=shared)
 
+    def write_switch(self, switch_id: str, state: str) -> None:
+        """Включить/выключить переключатель (ошибку DTC и т.п.)."""
+        self.parser.write_switch(switch_id, state)
+        self.dirty = True
+
     def transfer(self, donor: EcuParser, names: list[str], plan: TransferPlan) -> TransferReport:
         """Перенос карт из донора. Checkpoint перенесённых — состояние до переноса, если у карты
         ещё не было своего (своя точка отсчёта пользователя важнее)."""

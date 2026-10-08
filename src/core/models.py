@@ -46,6 +46,20 @@ class CalibrationTable(BaseModel):
         return len(self.values[0]) if self.values else 0
 
 
+class SwitchInfo(BaseModel):
+    """Переключатель (таблица Switch): ошибка DTC, исправление ECU и т.п."""
+
+    id: str
+    name: str
+    category: str
+    description: str = ""
+    # Код ошибки из имени «(P0030) FRONT O2 …» — для DTC; иначе пусто
+    code: str = ""
+    # Текущее состояние по байтам в ROM: «on» / «off»; None — байты не совпали ни с одним
+    state: str | None = None
+    raw: str = ""  # текущие байты (hex) — для подсказки, когда состояние неизвестно
+
+
 class Checkpoint(BaseModel):
     """Точка отсчёта для подсветки изменений карты: значения и оси (координаты ROM)."""
 
@@ -102,6 +116,8 @@ class TableDef(BaseModel):
     description: str = ""
     # Уровень из RomRaider definitions: 1 — основные таблицы … 5 — служебные; None — не задан
     userlevel: int | None = None
+    # Switch: варианты байтов по имени состояния («on» / «off»), hex без пробелов
+    states: dict[str, str] = Field(default_factory=dict)
 
 
 class RomId(BaseModel):
