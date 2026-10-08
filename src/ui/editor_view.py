@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QGuiApplication, QKeyEvent
-from PyQt6.QtWidgets import QHBoxLayout, QHeaderView, QLabel, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QHeaderView, QLabel, QSizePolicy, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
-from src.core.models import CalibrationTable, Checkpoint, MapInfo
+from src.core.models import CalibrationTable, Checkpoint, MapInfo, RomId
 from src.ui.graph_window import GraphKind, GraphWindow
 from src.ui.key_bindings import PHYSICAL_CONTROL, KeyBindings
-from src.ui.map.window import MapWindow, dimension_label
-from src.ui.value_colors import cell_background
+from src.ui.map.cells import dimension_label
+from src.ui.map.window import MapWindow
+from src.ui.levels import LEVELS, level_color
 
 # Новые окна карт — лесенкой от правого края главного окна
 CASCADE_STEP = 28
@@ -17,19 +20,6 @@ DIMENSION_COLOR = QColor("#888888")
 # Отметка карты, изменённой относительно checkpoint
 CHANGED_MARK = "●"
 CHANGED_COLOR = QColor("#c05000")
-# Фон строки карты по уровню (userlevel 1…5): шкала синий → красный, бледнее, чем в ячейках
-LEVEL_COLOR_STRENGTH = 0.28
-LEVELS = {
-    1: "основные таблицы",
-    2: "дополнительные",
-    3: "продвинутые",
-    4: "экспертные",
-    5: "служебные, отладка",
-}
-
-
-def level_color(level: int) -> QColor:
-    return cell_background((level - 1) / (len(LEVELS) - 1), LEVEL_COLOR_STRENGTH)
 
 
 class EditorView(QWidget):
@@ -88,6 +78,19 @@ class EditorView(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
+        # Какая прошивка открыта: имя файла и код прошивки (xmlid) с описанием ЭБУ
+        self._rom_file = QLabel()
+        self._rom_file.setStyleSheet("font-weight: 600;")
+        self._rom_file.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._rom_id = QLabel()
+        self._rom_id.setStyleSheet("color: #666;")
+        self._rom_id.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # Длинное имя файла не растягивает узкое главное окно — обрезается, полный путь в подсказке
+        for label in (self._rom_file, self._rom_id):
+            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.set_rom_info(None, None)
+        layout.addWidget(self._rom_file)
+        layout.addWidget(self._rom_id)
         layout.addWidget(_legend())
         layout.addWidget(self._map_tree)
 
@@ -99,6 +102,26 @@ class EditorView(QWidget):
         """Автопоказ окна графика: включён — окно открыто, пока у текущей карты есть график."""
         self._graph_enabled = enabled
         self._refresh_graph()
+
+    def set_rom_info(self, path: str | None, romid: RomId | None) -> None:
+        """Шапка над деревом: имя файла прошивки и её код (xmlid), рынок, модель, процессор."""
+        if not path:
+            self._rom_file.setText("ROM не открыт")
+            self._rom_id.setText("File → Open ROM…")
+            self._rom_file.setToolTip("")
+            self._rom_id.setToolTip("")
+            return
+        self._rom_file.setText(Path(path).name)
+        tooltip = path
+        if romid is None:
+            self._rom_id.setText("")
+        else:
+            car = " ".join(part for part in (romid.market, romid.make, romid.model, romid.submodel, romid.year) if part)
+            self._rom_id.setText(" · ".join(part for part in (romid.xmlid, car, romid.memmodel) if part))
+            if romid.ecuid:
+                tooltip += f"\nECU ID: {romid.ecuid}"
+        self._rom_file.setToolTip(tooltip)
+        self._rom_id.setToolTip(tooltip)
 
     def set_maps(self, maps: list[MapInfo]) -> None:
         self._map_tree.clear()

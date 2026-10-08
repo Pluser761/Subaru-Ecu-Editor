@@ -10,7 +10,8 @@ from src.core.transfer import check_compatibility, plan_transfer, render_report,
 from src.core.xml_reader import EcuDefsRepository
 from src.ui.app_settings import AppSettings
 from src.ui.main_window import MainWindow
-from src.ui.map.window import MapWindow, describe_shape
+from src.ui.map.cells import describe_shape
+from src.ui.map.window import MapWindow
 
 DEFAULT_DEFS = Path(__file__).resolve().parents[2] / "definitions" / "ecu_defs.xml"
 
@@ -119,6 +120,8 @@ class MainPresenter:
         self._to_check.clear()
         self._window.editor_view.set_changed_maps(set())
         self._window.set_rom_path(path)
+        definition = self._parser.definition
+        self._window.editor_view.set_rom_info(path, definition.romid if definition else None)
         self._window.show_editor()
         # После show_editor — иначе его «Editor» затирает число карт в статусе
         self._load_map_list()

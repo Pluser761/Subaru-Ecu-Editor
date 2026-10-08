@@ -3,13 +3,14 @@ from __future__ import annotations
 from enum import Enum
 
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QKeyEvent
+from PyQt6.QtGui import QCloseEvent, QKeyEvent, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QToolButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -17,7 +18,9 @@ from PyQt6.QtWidgets import (
 
 from src.core.models import CalibrationTable, Checkpoint
 from src.ui.key_bindings import Action, KeyBindings, is_fine_modifier
+from src.ui.map.cells import describe_shape
 from src.ui.map.constant_editor import ConstantEditor
+from src.ui.map.info_dialog import MapInfoDialog
 from src.ui.map.view import MapTableView
 from src.ui.widgets.step_controls import StepControls
 from src.ui.widgets.vertical_label import VerticalLabel
@@ -37,28 +40,6 @@ class _Mode(Enum):
     TABLE = "table"  # как в ROM: строки — ось Y, столбцы — ось X
     ROW = "row"  # 2D-вектор, хранящийся столбцом (N×1), показан одной строкой (1×N)
     CONSTANT = "constant"  # 1×1 — поле ввода вместо таблицы
-
-
-def dimension_label(rows: int, cols: int) -> str:
-    """3D / 2D / 1D — по форме таблицы, как она показывается (а не по table_type)."""
-    if rows >= 2 and cols >= 2:
-        return "3D"
-    if rows * cols >= 2:
-        return "2D"
-    return "1D"
-
-
-def describe_shape(rows: int, cols: int, unit: str) -> str:
-    """«3D · 18 × 13 · psi», «2D · 16 · RPM», «1D · RPM»."""
-    dim = dimension_label(rows, cols)
-    parts = [dim]
-    if dim == "3D":
-        parts.append(f"{rows} × {cols}")
-    elif dim == "2D":
-        parts.append(str(max(rows, cols)))
-    if unit:
-        parts.append(unit)
-    return " · ".join(parts)
 
 
 class MapWindow(QWidget):
@@ -157,7 +138,21 @@ class MapWindow(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 10)
-        layout.addWidget(self._title)
+        # Название и кнопка справки (описание из definitions, раскладка в ROM)
+        info_btn = QToolButton()
+        info_btn.setText("ⓘ")
+        info_btn.setAutoRaise(True)
+        info_btn.setToolTip("Описание карты (F1)")
+        info_btn.setStyleSheet("font-size: 15px; color: #666;")
+        info_btn.clicked.connect(self.show_info)
+        QShortcut(QKeySequence(Qt.Key.Key_F1), self, self.show_info)
+        self._info: MapInfoDialog | None = None
+        title_row = QHBoxLayout()
+        title_row.setSpacing(4)
+        title_row.addWidget(self._title)
+        title_row.addWidget(info_btn)
+        title_row.addStretch(1)
+        layout.addLayout(title_row)
         layout.addWidget(self._meta)
         layout.addWidget(self._shared_axes)
         checkpoint_btn = QPushButton("Set checkpoint")
@@ -208,6 +203,10 @@ class MapWindow(QWidget):
     def show_table(self, table: CalibrationTable, checkpoint: Checkpoint | None = None) -> None:
         """Показать карту (в т.ч. перечитанную после переноса) с сохранённым checkpoint."""
         self._map_id = table.name
+        # Как пришла от парсера (координаты ROM) — для справки
+        self._source = table
+        if self._info is not None:
+            self._info.show_table(table)
         self.setWindowTitle(table.name.strip())
         self._title.setText(table.name)
         self._table_name = table.name
@@ -241,6 +240,15 @@ class MapWindow(QWidget):
             self._pages.setCurrentIndex(0)
         self._set_compact_table(self._is_single_row())
         self._schedule_display()
+
+    def show_info(self) -> None:
+        """Окно справки о карте — немодальное, одно на окно карты."""
+        if self._info is None:
+            self._info = MapInfoDialog(self)
+        self._info.show_table(self._source)
+        self._info.show()
+        self._info.raise_()
+        self._info.activateWindow()
 
     def update_cell(self, row: int, col: int, value: float) -> None:
         """Показать значение, реально сохранённое в ROM (без повторной записи)."""

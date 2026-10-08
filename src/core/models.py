@@ -31,6 +31,11 @@ class CalibrationTable(BaseModel):
     scaling: Scaling | None = None
     # В прошивке подтверждён код чтения карт ЭБУ — сравнивать по его расчёту
     ecu_interpolation: bool = False
+    # Справка о карте (кнопка ⓘ в окне карты): из definitions и раскладки в ROM
+    description: str = ""
+    category: str = ""
+    userlevel: int | None = None
+    storage: str = ""  # «uint8 · 0xC0E58»
 
     @property
     def rows(self) -> int:

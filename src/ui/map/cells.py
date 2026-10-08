@@ -21,6 +21,28 @@ CHECKPOINT_DOWN_COLOR = QColor("#1a66d9")
 CHECKPOINT_BORDER_WIDTH = 2
 
 
+def dimension_label(rows: int, cols: int) -> str:
+    """3D / 2D / 1D — по форме таблицы, как она показывается (а не по table_type)."""
+    if rows >= 2 and cols >= 2:
+        return "3D"
+    if rows * cols >= 2:
+        return "2D"
+    return "1D"
+
+
+def describe_shape(rows: int, cols: int, unit: str) -> str:
+    """«3D · 18 × 13 · psi», «2D · 16 · RPM», «1D · RPM»."""
+    dim = dimension_label(rows, cols)
+    parts = [dim]
+    if dim == "3D":
+        parts.append(f"{rows} × {cols}")
+    elif dim == "2D":
+        parts.append(str(max(rows, cols)))
+    if unit:
+        parts.append(unit)
+    return " · ".join(parts)
+
+
 def format_cell_value(value: float) -> str:
     """Всегда два знака после точки."""
     return f"{value:.2f}"

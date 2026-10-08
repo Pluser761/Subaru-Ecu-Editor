@@ -196,6 +196,10 @@ class EcuParser:
             y_increments=_axis_increments(table.y_axis),
             scaling=scaling,
             ecu_interpolation=self.ecu_interpolation,
+            description=table.description.strip(),
+            category=table.category,
+            userlevel=table.userlevel,
+            storage=f"{table.storagetype} · 0x{table.storageaddress:X}" if table.storageaddress is not None else "",
         )
 
 
