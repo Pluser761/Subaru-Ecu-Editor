@@ -21,6 +21,7 @@ from src.ai import logs, tools
 from src.ai.tools import EditProposal, ToolError
 from src.core.parser import EcuParser
 from src.core.session import RomSession
+from src.version import version
 
 T = TypeVar("T")
 
@@ -67,7 +68,9 @@ def _require_rom(session: RomSession) -> None:
 
 
 def build_server(host: EditorHost) -> MCPServer:
-    server: MCPServer = MCPServer("subaru-ecu-editor", instructions=INSTRUCTIONS, log_level="WARNING")
+    server: MCPServer = MCPServer(
+        "subaru-ecu-editor", version=version(), instructions=INSTRUCTIONS, log_level="WARNING"
+    )
     read_only = ToolAnnotations(read_only_hint=True)
     references: dict[Path, EcuParser] = {}
 

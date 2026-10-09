@@ -1,20 +1,29 @@
 name: Windows build
 
+# Проверка каждого пуша и PR; релиз вызывает этот же workflow с номером версии (release.yml)
 on:
   push:
     branches: [master, main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Номер версии X.Y.Z для сборки релиза
+        type: string
+        required: false
+        default: ""
 
 permissions:
-  contents: write  # публикация релиза по тегу v*
+  contents: read
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # теги нужны git describe для номера dev-сборки
 
       - uses: actions/setup-python@v5
         with:
@@ -29,20 +38,33 @@ jobs:
       - name: Tests
         run: pytest -q
 
+      - name: Version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          # Релиз — номер из release.yml; иначе git describe (0.3.1-4-gabc1234) или dev-<коммит>
+          V="$RELEASE_VERSION"
+          if [ -z "$V" ]; then V="$(git describe --tags --match 'v[0-9]*' 2>/dev/null | sed 's/^v//')"; fi
+          if [ -z "$V" ]; then V="dev-$(git rev-parse --short HEAD)"; fi
+          python - "$V" <<'EOF'
+          import pathlib, sys
+          path = pathlib.Path("src/version.py")
+          text = path.read_text(encoding="utf-8")
+          assert '__version__ = "dev"' in text, "src/version.py: нет строки __version__"
+          path.write_text(text.replace('__version__ = "dev"', f'__version__ = "{sys.argv[1]}"', 1), encoding="utf-8")
+          EOF
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          echo "Версия сборки: $V"
+
       - name: Build (PyInstaller)
         run: pyinstaller --noconfirm subaru_ecu_editor.spec
 
       - name: Zip
         shell: pwsh
-        run: Compress-Archive -Path dist/SubaruEcuEditor -DestinationPath SubaruEcuEditor-windows.zip
+        run: Compress-Archive -Path dist/SubaruEcuEditor -DestinationPath "SubaruEcuEditor-$env:VERSION-windows.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: SubaruEcuEditor-windows
-          path: SubaruEcuEditor-windows.zip
-
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: SubaruEcuEditor-windows.zip
+          path: SubaruEcuEditor-*-windows.zip

@@ -27,11 +27,32 @@ python main.py
 
 GitHub Actions (`.github/workflows/windows-build.yml`) на каждый push в `master`/`main`,
 pull request и ручной запуск гоняет тесты на Windows и собирает программу PyInstaller'ом
-(`subaru_ecu_editor.spec`). Результат — артефакт `SubaruEcuEditor-windows.zip` у запуска
-workflow: распаковать и запустить `SubaruEcuEditor.exe`, Python не нужен. На тег `v*`
-(например, `git tag v0.1 && git push --tags`) архив прикладывается к GitHub Release.
+(`subaru_ecu_editor.spec`). Результат — артефакт `SubaruEcuEditor-<версия>-windows.zip` у
+запуска workflow: распаковать и запустить `SubaruEcuEditor.exe`, Python не нужен.
 `definitions/ecu_defs.xml` уже внутри сборки. Локально то же самое:
 `pip install pyinstaller && pyinstaller subaru_ecu_editor.spec` → `dist/SubaruEcuEditor/`.
+
+### Версии и релизы
+
+Версии — [SemVer](https://semver.org/lang/ru/) `X.Y.Z`, единственный источник — git-теги
+`vX.Y.Z`; в коде номер нигде не записан (`src/version.py` в репозитории — `"dev"`).
+
+- **patch** (`0.4.1 → 0.4.2`) — исправления без новых возможностей;
+- **minor** (`0.4.2 → 0.5.0`) — новые возможности (окно ошибок, единицы, ИИ…);
+- **major** (`0.5.0 → 1.0.0`) — несовместимые изменения: формат настроек, поведение,
+  к которому привыкли. Пока версия `0.x`, программа считается в разработке; `1.0.0` — когда
+  будет «стабильно, можно давать другим».
+
+**Выпуск релиза — кнопкой:** GitHub → Actions → **Release** → Run workflow → выбрать
+patch / minor / major (или вписать точный номер) → Run. Workflow (`release.yml`):
+
+1. берёт последний тег `vX.Y.Z` и считает следующий номер (тегов нет — `0.1.0`);
+2. собирает Windows-версию с этим номером (тесты внутри);
+3. только если сборка прошла — создаёт тег `vX.Y.Z` на этом коммите и GitHub Release с zip и
+   списком изменений (заголовки коммитов с прошлого релиза).
+
+Релиз выпускается только из основной ветки. Номер версии виден в заголовке окна; сборка
+не из релиза показывает `git describe`: `0.4.2-3-gabc1234` — три коммита после v0.4.2.
 
 ## Возможности
 

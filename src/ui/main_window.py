@@ -23,6 +23,7 @@ from src.ui.settings_dialog import SettingsDialog
 from src.core.transfer import TransferPlan
 from src.ui.transfer_dialog import TransferDialog, TransferReportDialog
 from src.ui.widgets.status_line import StatusLine
+from src.version import APP_NAME, version
 
 
 class MainWindow(QMainWindow):
@@ -30,7 +31,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Subaru ECU Editor")
+        self.setWindowTitle(_app_title())
         # Главное окно — только дерево карт; карты и график открываются отдельными окнами
         self.setGeometry(100, 100, 380, 720)
 
@@ -220,7 +221,7 @@ class MainWindow(QMainWindow):
 
     def set_rom_path(self, path: str | None, modified: bool = False) -> None:
         """Заголовок окна: открытый файл; [*] — отметка несохранённых правок (Qt)."""
-        title = "Subaru ECU Editor"
+        title = _app_title()
         if path:
             title = f"{title} — {path}[*]"
         self.setWindowTitle(title)
@@ -364,3 +365,7 @@ class MainWindow(QMainWindow):
             self.on_show_tools()
         else:
             self.show_tools()
+
+
+def _app_title() -> str:
+    return f"{APP_NAME} {version()}"
