@@ -23,6 +23,16 @@ python main.py
 Дальше: **File → Open ROM…** (Ctrl/Cmd+O), выбрать `.bin`/`.hex`-образ и открыть карту
 в дереве категорий — она откроется в отдельном окне.
 
+### Сборка под Windows
+
+GitHub Actions (`.github/workflows/windows-build.yml`) на каждый push в `master`/`main`,
+pull request и ручной запуск гоняет тесты на Windows и собирает программу PyInstaller'ом
+(`subaru_ecu_editor.spec`). Результат — артефакт `SubaruEcuEditor-windows.zip` у запуска
+workflow: распаковать и запустить `SubaruEcuEditor.exe`, Python не нужен. На тег `v*`
+(например, `git tag v0.1 && git push --tags`) архив прикладывается к GitHub Release.
+`definitions/ecu_defs.xml` уже внутри сборки. Локально то же самое:
+`pip install pyinstaller && pyinstaller subaru_ecu_editor.spec` → `dist/SubaruEcuEditor/`.
+
 ## Возможности
 
 - Автоопределение прошивки по `internalidaddress` / `internalidstring` и размеру файла.
