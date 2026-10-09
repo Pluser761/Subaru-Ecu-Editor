@@ -45,7 +45,8 @@ jobs:
         run: |
           # Релиз — номер из release.yml; иначе git describe (0.3.1-4-gabc1234) или dev-<коммит>
           V="$RELEASE_VERSION"
-          if [ -z "$V" ]; then V="$(git describe --tags --match 'v[0-9]*' 2>/dev/null | sed 's/^v//')"; fi
+          # Тегов ещё нет — git describe падает (128); шаг идёт под -e -o pipefail, поэтому || true
+          if [ -z "$V" ]; then V="$(git describe --tags --match 'v[0-9]*' 2>/dev/null || true)"; V="${V#v}"; fi
           if [ -z "$V" ]; then V="dev-$(git rev-parse --short HEAD)"; fi
           python - "$V" <<'EOF'
           import pathlib, sys
