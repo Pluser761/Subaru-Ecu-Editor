@@ -30,6 +30,8 @@ def main() -> None:
     window.show()
     # Прошлую прошивку открываем после показа окна: загрузка definitions занимает секунды
     QTimer.singleShot(0, presenter.restore_last_rom)
+    QTimer.singleShot(0, presenter.restore_ai_server)
+    app.aboutToQuit.connect(presenter.stop_ai_server)
 
     sys.exit(app.exec())
 

@@ -6,7 +6,10 @@ from pathlib import Path
 
 from PyQt6.QtCore import QProcess, Qt, QTimer
 
+from src.ai.server import DEFAULT_PORT
+from src.ai.tools import EditProposal
 from src.i18n import Language, tr
+from src.presenters.ai_presenter import AiPresenter
 from src.core.parser import EcuParser
 from src.core.models import CalibrationTable, Checkpoint
 from src.core.session import RomSession
@@ -58,6 +61,16 @@ class MainPresenter:
         window.on_show_switches = self.show_switches
         window.on_unit_system = self.set_unit_system
         window.on_language = self.set_language
+        # ИИ: MCP-сервер в этом же процессе — видит открытую сессию, правки подтверждает пользователь
+        self._ai = AiPresenter(
+            window,
+            session=lambda: self._session,
+            units=self._units,
+            on_applied=self._on_ai_applied,
+            on_show_map=self.select_map,
+        )
+        window.on_ai_server = self.set_ai_server
+        window.on_ai_help = lambda: window.show_ai_help(self._ai.url, self._ai.running)
         window.set_unit_system_checked(self._units_system)
         window.on_show_editor = window.show_editor
         window.on_show_tools = window.show_tools
@@ -428,6 +441,43 @@ class MainPresenter:
             UnitSystem.METRIC: tr("метрические (bar, °C, km/h)"),
         }
         self._window.set_status(tr("Единицы: {units}", units=names[system]))
+
+    # --- ИИ ---
+
+    def restore_ai_server(self) -> None:
+        """Запустить MCP-сервер, если он был включён в прошлый раз."""
+        if self._settings is not None and self._settings.ai_server_enabled():
+            self.set_ai_server(True)
+
+    def set_ai_server(self, enabled: bool) -> None:
+        """ИИ → MCP-сервер: запустить или остановить; выбор сохраняется."""
+        if enabled:
+            port = self._settings.ai_port(DEFAULT_PORT) if self._settings is not None else DEFAULT_PORT
+            try:
+                self._ai.start(port)
+            except OSError as exc:
+                self._window.set_ai_server_checked(False)
+                self._window.set_error(tr("MCP-сервер не запущен: {error}", error=exc))
+                return
+            self._window.set_status(tr("MCP-сервер для ИИ: {url}", url=self._ai.url))
+        else:
+            self._ai.stop()
+            self._window.set_status(tr("MCP-сервер для ИИ остановлен"))
+        self._window.set_ai_server_checked(enabled)
+        if self._settings is not None:
+            self._settings.set_ai_server_enabled(enabled)
+
+    def stop_ai_server(self) -> None:
+        self._ai.stop()
+
+    def _on_ai_applied(self, proposal: EditProposal) -> None:
+        """Правка ИИ записана: окна карты и соседей по общей оси показывают новые значения."""
+        editor = self._window.editor_view
+        touched = {proposal.map_id, *(name for name, _ in proposal.shared)}
+        for map_id in touched & set(editor.open_maps()):
+            editor.reload_map(*self._display(map_id))
+        self._check_changed(*touched)
+        self._window.set_status(tr("ИИ изменил карту: {name}", name=proposal.name))
 
     def set_language(self, language: Language) -> None:
         """View → Язык: сохранить; применяется перезапуском (с обычной проверкой правок)."""

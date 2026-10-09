@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
 from PyQt6.QtWidgets import (
     QMainWindow,
@@ -65,6 +66,9 @@ class MainWindow(QMainWindow):
         self.on_show_switches: Callable[[], None] | None = None
         self.on_unit_system: Callable[[UnitSystem], None] | None = None
         self.on_language: Callable[[Language], None] | None = None
+        # Меню «ИИ»: включить/выключить MCP-сервер, как подключиться
+        self.on_ai_server: Callable[[bool], None] | None = None
+        self.on_ai_help: Callable[[], None] | None = None
         # Можно ли закрыть окно (несохранённые правки); False — отменить закрытие
         self.on_close_requested: Callable[[], bool] | None = None
         # Перед закрытием окна (сохранение настроек)
@@ -171,6 +175,16 @@ class MainWindow(QMainWindow):
         switches_action.setShortcut(QKeySequence("Ctrl+E"))
         switches_action.triggered.connect(self._emit_show_switches)
         maps_menu.addAction(switches_action)
+
+        ai_menu = menu.addMenu(tr("&ИИ"))
+        assert ai_menu is not None
+        self.ai_server_action = QAction(tr("MCP-сервер для ИИ"), self)
+        self.ai_server_action.setCheckable(True)
+        self.ai_server_action.toggled.connect(self._emit_ai_server)
+        ai_menu.addAction(self.ai_server_action)
+        ai_help_action = QAction(tr("Как подключить Claude…"), self)
+        ai_help_action.triggered.connect(lambda: self.on_ai_help and self.on_ai_help())
+        ai_menu.addAction(ai_help_action)
 
     def closeEvent(self, event: QCloseEvent | None) -> None:
         if self.on_close_requested is not None and not self.on_close_requested():
@@ -292,6 +306,36 @@ class MainWindow(QMainWindow):
             tr("Язык интерфейса изменится после перезапуска. Перезапустить сейчас?"),
         )
         return answer == QMessageBox.StandardButton.Yes
+
+    def _emit_ai_server(self, enabled: bool) -> None:
+        if self.on_ai_server:
+            self.on_ai_server(enabled)
+
+    def set_ai_server_checked(self, enabled: bool) -> None:
+        """Отметка в меню без сигнала (сервер не запустился, восстановление из настроек)."""
+        self.ai_server_action.blockSignals(True)
+        self.ai_server_action.setChecked(enabled)
+        self.ai_server_action.blockSignals(False)
+
+    def show_ai_help(self, url: str, running: bool) -> None:
+        state = tr("Сервер запущен.") if running else tr("Сервер выключен: включите «ИИ → MCP-сервер для ИИ».")
+        box = QMessageBox(self)
+        box.setWindowTitle(tr("Подключение ИИ"))
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        box.setText(
+            tr(
+                "<p>Редактор работает как MCP-сервер: ИИ видит открытую прошивку, карты и логи "
+                "и может предлагать правки. Каждую правку вы подтверждаете; файл сохраняете сами.</p>"
+                "<p>Адрес: <code>{url}</code></p>"
+                "<p><b>Claude Code</b> — в терминале:<br><code>claude mcp add --transport http subaru-ecu {url}</code></p>"
+                "<p><b>Claude Desktop</b> и другие клиенты — добавьте MCP-сервер с транспортом "
+                "Streamable HTTP по этому адресу.</p><p>{state}</p>",
+                url=url,
+                state=state,
+            )
+        )
+        box.exec()
 
     def _emit_language(self, language: Language) -> None:
         if self.on_language:

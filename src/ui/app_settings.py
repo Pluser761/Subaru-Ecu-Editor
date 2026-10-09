@@ -16,6 +16,8 @@ _GRAPH_ENABLED = "graph/enabled"
 _GRAPH_SIZE = "graph/size"
 _UNITS = "view/units"
 _LANGUAGE = "ui/language"
+_AI_SERVER = "ai/mcp_enabled"
+_AI_PORT = "ai/port"
 # Старый ключ (положение + размер): положение больше не сохраняется — окно встаёт под картой
 _GRAPH_GEOMETRY_OLD = "graph/geometry"
 
@@ -99,6 +101,22 @@ class AppSettings:
     def set_language(self, language: Language) -> None:
         self._settings.setValue(_LANGUAGE, language.value)
         self._settings.sync()
+
+    # --- MCP-сервер для ИИ ---
+
+    def ai_server_enabled(self) -> bool:
+        return self._settings.value(_AI_SERVER, False) not in (False, "false", "0", 0)
+
+    def set_ai_server_enabled(self, enabled: bool) -> None:
+        self._settings.setValue(_AI_SERVER, enabled)
+        self._settings.sync()
+
+    def ai_port(self, default: int) -> int:
+        try:
+            port = int(str(self._settings.value(_AI_PORT, default)))
+        except ValueError:
+            return default
+        return port if 1024 <= port <= 65535 else default
 
     # --- Окно графика ---
 
