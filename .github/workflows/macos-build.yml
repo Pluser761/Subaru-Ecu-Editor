@@ -1,0 +1,81 @@
+name: macOS build
+
+# То же, что windows-build.yml, но для macOS (Apple Silicon): .app в dmg.
+# Проверка каждого пуша и PR; релиз вызывает этот же workflow с номером версии (release.yml)
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Номер версии X.Y.Z для сборки релиза
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest  # arm64; Intel-маки эта сборка не поддерживает
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # теги нужны git describe для номера dev-сборки
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Tests
+        run: pytest -q
+
+      - name: Version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          # Релиз — номер из release.yml; иначе git describe (0.3.1-4-gabc1234) или dev-<коммит>
+          V="$RELEASE_VERSION"
+          # Тегов ещё нет — git describe падает (128); шаг идёт под -e -o pipefail, поэтому || true
+          if [ -z "$V" ]; then V="$(git describe --tags --match 'v[0-9]*' 2>/dev/null || true)"; V="${V#v}"; fi
+          if [ -z "$V" ]; then V="dev-$(git rev-parse --short HEAD)"; fi
+          python - "$V" <<'EOF'
+          import pathlib, sys
+          path = pathlib.Path("src/version.py")
+          text = path.read_text(encoding="utf-8")
+          assert '__version__ = "dev"' in text, "src/version.py: нет строки __version__"
+          path.write_text(text.replace('__version__ = "dev"', f'__version__ = "{sys.argv[1]}"', 1), encoding="utf-8")
+          EOF
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          echo "Версия сборки: $V"
+
+      - name: Build (PyInstaller)
+        run: pyinstaller --noconfirm subaru_ecu_editor.spec
+
+      - name: Dmg
+        run: |
+          # Окно dmg: приложение и ярлык «Программы», чтобы перетащить
+          mkdir dmg
+          cp -R dist/SubaruEcuEditor.app dmg/
+          ln -s /Applications dmg/Applications
+          DMG="SubaruEcuEditor-$VERSION-macos-arm64.dmg"
+          # hdiutil на раннерах GitHub иногда падает с «Resource busy» — повторяем
+          for attempt in 1 2 3 4 5; do
+            hdiutil create -volname "Subaru ECU Editor" -srcfolder dmg -ov -format UDZO "$DMG" && break
+            if [ "$attempt" = 5 ]; then exit 1; fi
+            sleep 5
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SubaruEcuEditor-macos
+          path: SubaruEcuEditor-*-macos-arm64.dmg

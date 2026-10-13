@@ -1,7 +1,7 @@
 name: Release
 
 # Кнопка: Actions → Release → Run workflow. Считает следующую версию по последнему тегу vX.Y.Z,
-# собирает Windows-версию (тесты внутри) и публикует GitHub Release с тегом и zip.
+# собирает версии для Windows и macOS (тесты внутри) и публикует GitHub Release с тегом, zip и dmg.
 # Если сборка или тесты упали — ничего не публикуется и тег не создаётся.
 on:
   workflow_dispatch:
@@ -60,6 +60,10 @@ jobs:
             if [ -n "$LAST" ]; then git log "$LAST..HEAD" --no-merges --pretty='- %s'; else git log --no-merges --pretty='- %s'; fi
             echo
             echo "Сборка для Windows: распакуйте zip и запустите SubaruEcuEditor.exe."
+            echo
+            echo "Сборка для macOS (Apple Silicon): откройте dmg и перетащите программу в «Программы»."
+            echo "Приложение не подписано: при первом запуске — правый клик → «Открыть»,"
+            echo 'или в Терминале `xattr -dr com.apple.quarantine "/Applications/SubaruEcuEditor.app"`.'
           } > release-notes.md
 
       - uses: actions/upload-artifact@v4
@@ -67,14 +71,20 @@ jobs:
           name: release-notes
           path: release-notes.md
 
-  build:
+  build-windows:
     needs: prepare
     uses: ./.github/workflows/windows-build.yml
     with:
       version: ${{ needs.prepare.outputs.version }}
 
+  build-macos:
+    needs: prepare
+    uses: ./.github/workflows/macos-build.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+
   publish:
-    needs: [prepare, build]
+    needs: [prepare, build-windows, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -82,6 +92,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: SubaruEcuEditor-windows
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: SubaruEcuEditor-macos
 
       - uses: actions/download-artifact@v4
         with:
@@ -94,5 +108,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: Subaru ECU Editor ${{ needs.prepare.outputs.version }}
           body_path: release-notes.md
-          files: SubaruEcuEditor-*-windows.zip
+          files: |
+            SubaruEcuEditor-*-windows.zip
+            SubaruEcuEditor-*-macos-arm64.dmg
           make_latest: true

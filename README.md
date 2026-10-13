@@ -23,7 +23,7 @@ python main.py
 Дальше: **File → Open ROM…** (Ctrl/Cmd+O), выбрать `.bin`/`.hex`-образ и открыть карту
 в дереве категорий — она откроется в отдельном окне.
 
-### Сборка под Windows
+### Сборка под Windows и macOS
 
 GitHub Actions (`.github/workflows/windows-build.yml`) на каждый push в `master`/`main`,
 pull request и ручной запуск гоняет тесты на Windows и собирает программу PyInstaller'ом
@@ -31,6 +31,18 @@ pull request и ручной запуск гоняет тесты на Windows �
 запуска workflow: распаковать и запустить `SubaruEcuEditor.exe`, Python не нужен.
 `definitions/ecu_defs.xml` уже внутри сборки. Локально то же самое:
 `pip install pyinstaller && pyinstaller subaru_ecu_editor.spec` → `dist/SubaruEcuEditor/`.
+На macOS spec дополнительно собирает `dist/SubaruEcuEditor.app` (версия в Info.plist — из
+`src/version.py`, для не-релизных сборок `0.0.0`).
+
+macOS — так же, `.github/workflows/macos-build.yml` на раннере `macos-latest`: артефакт
+`SubaruEcuEditor-<версия>-macos-arm64.dmg`, только Apple Silicon (Intel-маки не поддерживаются).
+Открыть dmg и перетащить программу в «Программы». Приложение не подписано и не нотаризовано,
+поэтому Gatekeeper его блокирует: первый запуск — правый клик → «Открыть» или
+`xattr -dr com.apple.quarantine /Applications/SubaruEcuEditor.app`.
+
+Иконка программы — `assets/`: исходник `icon.svg`, из него `icon.ico` (Windows, exe),
+`icon.icns` (macOS, .app) и `icon.png` (иконка окон, `main.py`). После правки svg
+перегенерируй все три.
 
 ### Версии и релизы
 
@@ -47,9 +59,9 @@ pull request и ручной запуск гоняет тесты на Windows �
 patch / minor / major (или вписать точный номер) → Run. Workflow (`release.yml`):
 
 1. берёт последний тег `vX.Y.Z` и считает следующий номер (тегов нет — `0.1.0`);
-2. собирает Windows-версию с этим номером (тесты внутри);
-3. только если сборка прошла — создаёт тег `vX.Y.Z` на этом коммите и GitHub Release с zip и
-   списком изменений (заголовки коммитов с прошлого релиза).
+2. собирает версии для Windows и macOS с этим номером (тесты внутри);
+3. только если обе сборки прошли — создаёт тег `vX.Y.Z` на этом коммите и GitHub Release с zip,
+   dmg и списком изменений (заголовки коммитов с прошлого релиза).
 
 Релиз выпускается только из основной ветки. Номер версии виден в заголовке окна; сборка
 не из релиза показывает `git describe`: `0.4.2-3-gabc1234` — три коммита после v0.4.2.
