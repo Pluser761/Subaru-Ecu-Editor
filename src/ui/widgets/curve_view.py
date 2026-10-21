@@ -19,6 +19,9 @@ POINT_SIZE = 9
 SELECTED_SIZE = 14
 SELECTED_PEN = pg.mkPen((25, 25, 25), width=2)
 SELECTED_BRUSH = pg.mkBrush(255, 255, 255)
+# Значения «до» правки (предложение ИИ) — серый пунктир с полыми точками
+REFERENCE_PEN = pg.mkPen((140, 140, 140), width=LINE_WIDTH, style=Qt.PenStyle.DashLine)
+REFERENCE_POINT_PEN = pg.mkPen((140, 140, 140), width=1.5)
 
 
 class CurveView(QWidget):
@@ -60,7 +63,16 @@ class CurveView(QWidget):
         self._points.sigClicked.connect(self._on_points_clicked)
         self._selected = pg.ScatterPlotItem(size=SELECTED_SIZE, pen=SELECTED_PEN, brush=SELECTED_BRUSH)
         self._selected.setZValue(10)
-        for graphics in (self._curve, self._points, self._selected):
+        self._reference = pg.PlotDataItem(
+            pen=REFERENCE_PEN,
+            connect="finite",
+            symbol="o",
+            symbolSize=POINT_SIZE - 2,
+            symbolPen=REFERENCE_POINT_PEN,
+            symbolBrush=None,
+        )
+        self._reference.setZValue(-1)
+        for graphics in (self._reference, self._curve, self._points, self._selected):
             self._plot.addItem(graphics)
 
         reset_btn = QPushButton(tr("Сбросить вид"))
@@ -97,6 +109,7 @@ class CurveView(QWidget):
         self._cells = []
         self._categories = 0
         self._curve.setData([], [])
+        self._reference.setData([], [])
         self._points.setData([])
         self._selected.setData([])
 
@@ -112,8 +125,12 @@ class CurveView(QWidget):
         x_title: str = "",
         y_title: str = "",
         unit: str = "",
+        reference: list[list[float]] | None = None,
     ) -> None:
-        """values[row][col] как в таблице карты; вектор — одна строка или один столбец."""
+        """values[row][col] как в таблице карты; вектор — одна строка или один столбец.
+
+        reference — значения «до» той же формы (правка ИИ): серый пунктир под кривой.
+        """
         z = np.asarray(values, dtype=float)
         if z.ndim != 2 or z.size < 2 or min(z.shape) != 1:
             self.clear()
@@ -152,6 +169,13 @@ class CurveView(QWidget):
         index = {cell: i for i, cell in enumerate(self._cells)}
         chosen = [index[cell] for cell in (selected or ()) if cell in index]
         self._selected.setData(x=xs[chosen], y=plot_ys[chosen], data=chosen)
+
+        ref = np.asarray(reference, dtype=float) if reference is not None else None
+        if ref is not None and ref.shape == z.shape:
+            ref_ys = ref[0] if rows == 1 else ref[:, 0]
+            self._reference.setData(xs, np.where(np.isfinite(ref_ys), ref_ys, np.nan))
+        else:
+            self._reference.setData([], [])
 
         # Диапазон по X — только при смене вида оси, чтобы правки не сбрасывали масштаб
         if categories != self._categories:

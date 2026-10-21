@@ -21,6 +21,9 @@ SCENE_RADIUS = 7.5
 
 MESH_LINE_RGBA = (0.15, 0.15, 0.15, 0.75)
 MESH_LINE_WIDTH = 2.0
+# Значения «до» правки (предложение ИИ) — фиолетовый каркас без заливки, виден сквозь меш
+REFERENCE_LINE_RGBA = (0.55, 0.15, 0.75, 0.8)
+REFERENCE_LINE_WIDTH = 1.5
 FLOOR_GRID_RGBA = (0, 0, 0, 90)
 FLOOR_GRID_WIDTH = 2.0
 LABEL_RGBA = (50, 50, 50, 255)
@@ -201,6 +204,17 @@ class SurfaceView(QWidget):
             smooth=False,
             computeNormals=False,
         )
+        self._reference = gl.GLSurfacePlotItem(
+            showGrid=True,
+            drawFaces=False,
+            lineColor=REFERENCE_LINE_RGBA,
+            lineWidth=REFERENCE_LINE_WIDTH,
+            smooth=False,
+            computeNormals=False,
+        )
+        # Каркас — дочерний lineplot; без теста глубины, иначе «было» ниже «станет» скрыто мешем
+        self._reference.lineplot.setGLOptions(_OVERLAY_GL_OPTIONS)
+        self._reference.setDepthValue(5)
         # Выделение: маркер в узле (обводка + заливка) и тонкая «ножка» до пола
         self._selected_stems = gl.GLLinePlotItem(
             mode="lines",
@@ -278,6 +292,7 @@ class SurfaceView(QWidget):
     def _items(self) -> tuple[gl.GLGraphicsItem, ...]:
         return (
             self._surface,
+            self._reference,
             self._selected_stems,
             self._selected_outline,
             self._selected,
@@ -372,10 +387,12 @@ class SurfaceView(QWidget):
         y_labels: list[str] | None = None,
         x_title: str = "",
         y_title: str = "",
+        reference: list[list[float]] | None = None,
     ) -> None:
         """values[row][col]: row — ось Y, col — ось X (как в таблице карты).
 
         x_labels / y_labels — подписи статических осей для надписей сцены.
+        reference — значения «до» той же формы (правка ИИ): серый каркас в общей шкале.
         """
         z = np.asarray(values, dtype=float)
         if z.ndim != 2 or z.shape[0] < 2 or z.shape[1] < 2:
@@ -386,9 +403,14 @@ class SurfaceView(QWidget):
         xs = normalize_axis(x_axis, cols) * SIZE_XY
         ys = normalize_axis(y_axis, rows) * SIZE_XY
 
+        ref = np.asarray(reference, dtype=float) if reference is not None else None
+        if ref is not None and ref.shape != z.shape:
+            ref = None
         finite = np.isfinite(z)
-        if finite.any():
-            z_min, z_max = float(z[finite].min()), float(z[finite].max())
+        # Шкала — общая для «до» и «после», иначе высоты не сравнить
+        both = np.concatenate([z[finite], ref[np.isfinite(ref)]]) if ref is not None else z[finite]
+        if both.size:
+            z_min, z_max = float(both.min()), float(both.max())
         else:
             z_min = z_max = 0.0
         span = z_max - z_min
@@ -404,6 +426,7 @@ class SurfaceView(QWidget):
         cells = [(r, c) for r, c in (selected or ()) if r < rows and c < cols]
 
         self._show_surface(xs, ys, zs, colors)
+        self._show_reference(xs, ys, ref, z_min, span)
         self._show_selection(xs, ys, zs, cells)
         self._set_labels(x_axis, y_axis, x_labels, y_labels, x_title, y_title, z_min, z_max)
 
@@ -417,6 +440,17 @@ class SurfaceView(QWidget):
             colors=colors.transpose(1, 0, 2).reshape(-1, 4),
         )
         self._surface.setVisible(True)
+
+    def _show_reference(
+        self, xs: np.ndarray, ys: np.ndarray, ref: np.ndarray | None, z_min: float, span: float
+    ) -> None:
+        if ref is None:
+            self._reference.setVisible(False)
+            return
+        zn = (ref - z_min) / span if span > 0 else np.full_like(ref, 0.5)
+        zn[~np.isfinite(ref)] = 0.0
+        self._reference.setData(x=xs, y=ys, z=(zn * SIZE_Z).T)
+        self._reference.setVisible(True)
 
     def _show_selection(
         self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, cells: list[tuple[int, int]]
