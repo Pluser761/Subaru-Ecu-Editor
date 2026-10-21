@@ -45,6 +45,13 @@ def describe_table(table: CalibrationTable) -> str:
     rows += _axis_rows("Y", table.y_title, table.y_axis, table.y_labels, table.y_shared_with, table.rows)
     if table.storage:
         rows.append((tr("В ROM"), escape(table.storage)))
+    if table.source:
+        rows.append((
+            tr("Источник"),
+            '<span style="color:#b36b00;">⚠ '
+            + tr("не проверена — дополнение definitions: {file}", file=escape(table.source))
+            + "</span>",
+        ))
     rows.append((
         tr("Чтение ЭБУ"),
         tr("по коду ЭБУ Denso SH7055/SH7058 (проверено по прошивке)")

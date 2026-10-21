@@ -23,6 +23,7 @@ from src.ui.map.cells import describe_shape
 from src.ui.map.constant_editor import ConstantEditor
 from src.ui.map.info_dialog import MapInfoDialog
 from src.ui.map.view import MapTableView
+from src.ui.unverified import unverified_pixmap, unverified_tooltip
 from src.ui.widgets.step_controls import StepControls
 from src.ui.widgets.vertical_label import VerticalLabel
 
@@ -66,6 +67,8 @@ class MapWindow(QWidget):
     matrix_pasted = pyqtSignal(int, int)
     # Нажали Set checkpoint — изменения карты сброшены
     checkpoint_set = pyqtSignal(str)
+    # Нажали «Откатить к checkpoint» — презентер переписывает карту в ROM
+    revert_requested = pyqtSignal(str)
 
     def __init__(
         self,
@@ -83,6 +86,10 @@ class MapWindow(QWidget):
         self._title.setStyleSheet("font-size: 14px; font-weight: 600;")
         self._meta = QLabel()
         self._meta.setStyleSheet("color: #666;")
+        # Карта из дополнения definitions — не проверена
+        self._unverified = QLabel()
+        self._unverified.setPixmap(unverified_pixmap(16))
+        self._unverified.setVisible(False)
         # Ось, которую используют и другие таблицы: её правка меняет ось и у них
         self._shared_axes = QLabel()
         self._shared_axes.setStyleSheet("color: #b36b00;")
@@ -151,6 +158,7 @@ class MapWindow(QWidget):
         title_row = QHBoxLayout()
         title_row.setSpacing(4)
         title_row.addWidget(self._title)
+        title_row.addWidget(self._unverified)
         title_row.addWidget(info_btn)
         title_row.addStretch(1)
         layout.addLayout(title_row)
@@ -164,9 +172,13 @@ class MapWindow(QWidget):
             )
         )
         checkpoint_btn.clicked.connect(self._set_checkpoint)
+        revert_btn = QPushButton(tr("Откатить к checkpoint"))
+        revert_btn.setToolTip(tr("Вернуть в прошивке значения и оси карты к checkpoint"))
+        revert_btn.clicked.connect(lambda: self.revert_requested.emit(self._map_id))
         edit_row = QHBoxLayout()
         edit_row.addWidget(self._steps, stretch=1)
         edit_row.addWidget(checkpoint_btn)
+        edit_row.addWidget(revert_btn)
         layout.addLayout(edit_row)
 
         self._grid_frame = QFrame()
@@ -212,6 +224,8 @@ class MapWindow(QWidget):
             self._info.show_table(table)
         self.setWindowTitle(table.name.strip())
         self._title.setText(table.name)
+        self._unverified.setVisible(bool(table.source))
+        self._unverified.setToolTip(unverified_tooltip(table.source) if table.source else "")
         self._table_name = table.name
         self._table_unit = table.unit
         self._meta.setText(describe_shape(table.rows, table.cols, table.unit))

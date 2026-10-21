@@ -13,10 +13,12 @@ from typing import Callable, TypeVar
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal
 
+from src.ai.notes import NotesStore
 from src.ai.server import DEFAULT_PORT, ServerThread
 from src.ai.tools import EditProposal
 from src.core.session import RomSession
 from src.core.units import TableUnits
+from src.i18n import tr
 from src.ui.ai_edit_dialog import AiEditDialog, EditPreview
 from src.ui.main_window import MainWindow
 
@@ -36,6 +38,7 @@ class AiPresenter(QObject):
         units: Callable[[str], TableUnits],
         on_applied: Callable[[EditProposal], None],
         on_show_map: Callable[[str], None],
+        notes: NotesStore | None = None,
     ) -> None:
         super().__init__()
         self._window = window
@@ -43,9 +46,12 @@ class AiPresenter(QObject):
         self._units = units
         self._on_applied = on_applied
         self._on_show_map = on_show_map
+        self._notes = notes
         self._server: ServerThread | None = None
         # Правки, ждущие ответа пользователя: при остановке сервера — отказ
         self._pending: set[Future[bool]] = set()
+        # Окно подтверждения, чья правка сейчас на графике (их может быть несколько)
+        self._previewing: AiEditDialog | None = None
         # Сигнал из рабочего потока к объекту потока GUI — доставляется в очереди событий GUI
         self._job.connect(self._run_job)
 
@@ -63,7 +69,7 @@ class AiPresenter(QObject):
         """OSError — не запустился (порт занят)."""
         if self._server is not None:
             return
-        server = ServerThread(self, port)
+        server = ServerThread(self, port, self._notes)
         server.start()
         self._server = server
 
@@ -96,15 +102,22 @@ class AiPresenter(QObject):
         dialogs: list[AiEditDialog] = []
 
         def job() -> None:
-            dialog = AiEditDialog(self._preview(proposal), self._window)
+            preview = self._preview(proposal)
+            dialog = AiEditDialog(preview, self._window)
             dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
             def finished(code: int) -> None:
+                if self._previewing is dialog:
+                    self._previewing = None
+                    self._window.editor_view.clear_graph_preview()
                 if not future.done():
                     future.set_result(code == AiEditDialog.DialogCode.Accepted)
 
             dialog.finished.connect(finished)
             dialogs.append(dialog)
             dialog.show()
+            # «Было» и «станет» — на графике, пока пользователь решает
+            self._previewing = dialog
+            self._window.editor_view.show_graph_preview(graph_preview(preview), anchor=dialog)
             dialog.raise_()
             dialog.activateWindow()
 
@@ -163,3 +176,28 @@ class AiPresenter(QObject):
             y_decimals=shown.y_decimals,
             shared=sorted({name.strip() for name, _ in proposal.shared}),
         )
+
+
+def graph_preview(preview: EditPreview) -> dict[str, object]:
+    """Аргументы GraphWindow.set_data для правки ИИ: новые значения на новых осях, прежние —
+    reference, изменённые ячейки выделены."""
+    changed = {
+        (r, c)
+        for r, (old_row, new_row) in enumerate(zip(preview.old, preview.new))
+        for c, (o, n) in enumerate(zip(old_row, new_row))
+        if n != o
+    }
+    return {
+        "name": preview.name,
+        "values": preview.new,
+        "x_axis": preview.x_new,
+        "y_axis": preview.y_new,
+        "selected": changed,
+        "x_labels": preview.x_labels,
+        "y_labels": preview.y_labels,
+        "x_title": preview.x_title,
+        "y_title": preview.y_title,
+        "unit": preview.unit,
+        "reference": preview.old,
+        "title": tr("{name} — предложение ИИ", name=preview.name.strip()),
+    }

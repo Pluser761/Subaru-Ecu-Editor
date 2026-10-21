@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 import sys
 
 from pathlib import Path
 
 from PyQt6.QtCore import QProcess, Qt, QTimer
 
+from src.ai.notes import NoteKey, NotesStore
 from src.ai.server import DEFAULT_PORT
 from src.ai.tools import EditProposal
 from src.i18n import Language, tr
@@ -23,6 +25,21 @@ from src.ui.map.window import MapWindow
 from src.ui.switches_window import SwitchesWindow
 
 DEFAULT_DEFS = Path(__file__).resolve().parents[2] / "definitions" / "ecu_defs.xml"
+# Дополнения из сборки: таблицы, которых нет в ecu_defs.xml (core.xml_reader.EcuDefsRepository)
+DEFAULT_EXTRA_DEFS = DEFAULT_DEFS.parent / "extra"
+
+
+_VERSION_SUFFIX = re.compile(r"[_-][vV](\d+)$")
+
+
+def next_save_stem(stem: str) -> str:
+    """Имя для «Save As»: `…_v14`/`…-v14` → `…_v15`/`…-v15` (ширина номера сохраняется), иначе `…-edited`."""
+    match = _VERSION_SUFFIX.search(stem)
+    if match:
+        digits = match.group(1)
+        number = str(int(digits) + 1).zfill(len(digits))
+        return f"{stem[:match.start(1)]}{number}"
+    return stem if stem.endswith("-edited") else f"{stem}-edited"
 
 
 class MainPresenter:
@@ -41,6 +58,10 @@ class MainPresenter:
         self._settings = settings
         self._session = RomSession(parser or EcuParser())
         self._defs_path = Path(defs_path) if defs_path else DEFAULT_DEFS
+        # Папки дополнений: из сборки (только для стандартного ecu_defs.xml) и свои — рядом с settings.ini
+        self._extra_defs: list[Path] = [DEFAULT_EXTRA_DEFS] if defs_path is None else []
+        if settings is not None:
+            self._extra_defs.append(settings.definitions_dir)
         self._defs_repo: EcuDefsRepository | None = None
         # Карты, ждущие перепроверки «изменена ли» (отметка в дереве) — отложенно, пачкой
         self._to_check: set[str] = set()
@@ -50,6 +71,8 @@ class MainPresenter:
         # Окно «Ошибки и переключатели» и состояния переключателей на момент открытия файла
         self._switches_window: SwitchesWindow | None = None
         self._switch_original: dict[str, str | None] = {}
+        # Заметки о прошивках для ИИ — рядом с settings.ini; без настроек — нет и заметок
+        self._notes = NotesStore(settings.notes_dir) if settings is not None else None
         # Единицы на экране; ROM, сессия и checkpoint — всегда в единицах definitions
         self._units_system = settings.unit_system() if settings is not None else UnitSystem.DEFINITIONS
 
@@ -59,6 +82,7 @@ class MainPresenter:
         window.on_close_requested = self._confirm_discard
         window.on_transfer_maps = self.transfer_maps
         window.on_show_switches = self.show_switches
+        window.on_revert_all = self.revert_all
         window.on_unit_system = self.set_unit_system
         window.on_language = self.set_language
         # ИИ: MCP-сервер в этом же процессе — видит открытую сессию, правки подтверждает пользователь
@@ -68,9 +92,12 @@ class MainPresenter:
             units=self._units,
             on_applied=self._on_ai_applied,
             on_show_map=self.select_map,
+            notes=self._notes,
         )
         window.on_ai_server = self.set_ai_server
         window.on_ai_help = lambda: window.show_ai_help(self._ai.url, self._ai.running)
+        window.on_ai_notes = self.show_notes
+        window.on_open_defs_folder = self.open_defs_folder
         window.set_unit_system_checked(self._units_system)
         window.on_show_editor = window.show_editor
         window.on_show_tools = window.show_tools
@@ -115,7 +142,7 @@ class MainPresenter:
             if not self._defs_path.exists():
                 raise FileNotFoundError(tr("Не найден файл definitions: {path}", path=self._defs_path))
             self._window.set_status(tr("Загрузка definitions: {name}…", name=self._defs_path.name))
-            self._defs_repo = EcuDefsRepository.load(self._defs_path)
+            self._defs_repo = EcuDefsRepository.load(self._defs_path, self._extra_defs)
         return self._defs_repo
 
     @property
@@ -231,8 +258,7 @@ class MainPresenter:
         if not self._can_save():
             return False
         current = Path(self._parser.file_path or "rom.hex")
-        stem = current.stem if current.stem.endswith("-edited") else f"{current.stem}-edited"
-        path = self._window.ask_save_rom_path(str(current.with_name(f"{stem}{current.suffix}")))
+        path = self._window.ask_save_rom_path(str(current.with_name(f"{next_save_stem(current.stem)}{current.suffix}")))
         if not path:
             return False
         return self._save_to(path)
@@ -250,6 +276,7 @@ class MainPresenter:
     def _save_to(self, path: str) -> bool:
         if not self._can_save():
             return False
+        old_key = self._note_key()
         try:
             fixed = self._session.save(path)
         except (OSError, ValueError) as exc:
@@ -257,6 +284,13 @@ class MainPresenter:
             self._window.show_info(tr("Сохранение"), tr("Не сохранено: {error}", error=exc))
             return False
         self._save_path = path
+        # Заметки ИИ привязаны к имени файла — новое имя получает копию
+        new_key = self._note_key()
+        if self._notes is not None and old_key is not None and new_key is not None:
+            try:
+                self._notes.copy(old_key, new_key)
+            except OSError as exc:
+                self._window.set_error(tr("Заметки не скопированы: {error}", error=exc))
         self._window.set_rom_path(path, modified=False)
         definition = self._parser.definition
         self._window.editor_view.set_rom_info(path, definition.romid if definition else None)
@@ -339,6 +373,7 @@ class MainPresenter:
         window.x_axis_changed.connect(self.on_x_axis_changed)
         window.y_axis_changed.connect(self.on_y_axis_changed)
         window.checkpoint_set.connect(self.on_checkpoint_set)
+        window.revert_requested.connect(self.revert_map)
         window.matrix_copied.connect(self.on_matrix_copied)
         window.matrix_pasted.connect(self.on_matrix_pasted)
         window.operation_error.connect(self.on_operation_error)
@@ -349,6 +384,41 @@ class MainPresenter:
         shown = self._window.editor_view.checkpoint(map_id)
         self._session.set_checkpoint(map_id, self._units(map_id).checkpoint_definition(shown) if shown else None)
         self._check_changed(map_id)
+
+    def revert_map(self, map_id: str) -> None:
+        """Кнопка в окне карты: откатить эту карту к checkpoint."""
+        if map_id not in self._session.refresh_changed({map_id}):
+            self._window.set_status(tr("Карта не отличается от checkpoint"))
+            return
+        self._revert([map_id])
+
+    def revert_all(self) -> None:
+        """Карты → откатить все изменённые карты к checkpoint."""
+        if not self._parser.file_path:
+            return
+        changed = sorted(self._session.find_changed())
+        self._window.editor_view.set_changed_maps(set(changed))
+        if not changed:
+            self._window.show_info(tr("Откат к checkpoint"), tr("Нет карт, изменённых относительно checkpoint."))
+            return
+        self._revert(changed)
+
+    def _revert(self, names: list[str]) -> None:
+        if not self._window.ask_revert(names):
+            return
+        try:
+            touched = self._session.revert(set(names))
+        except Exception as exc:  # noqa: BLE001
+            self._window.set_error(tr("Откат не выполнен: {error}", error=exc))
+            return
+        editor = self._window.editor_view
+        for map_id in touched & set(editor.open_maps()):
+            editor.reload_map(*self._display(map_id))
+        self._check_changed(*touched)
+        if len(names) == 1:
+            self._window.set_status(tr("Карта откачена к checkpoint: {name}", name=names[0].strip()))
+        else:
+            self._window.set_status(tr("Откачено к checkpoint карт: {n}", n=len(names)))
 
     def _check_changed(self, *map_ids: str) -> None:
         """Перепроверить, отличаются ли карты от checkpoint — отложенно: шаг по сотне ячеек
@@ -467,15 +537,56 @@ class MainPresenter:
         if self._settings is not None:
             self._settings.set_ai_server_enabled(enabled)
 
+    def _note_key(self) -> NoteKey | None:
+        return NoteKey.for_rom(self._parser.file_path, self._parser.xmlid)
+
+    def show_notes(self) -> None:
+        """ИИ → Заметки о прошивке: посмотреть и поправить контекст ИИ для открытого ROM."""
+        key = self._note_key()
+        if self._notes is None or key is None:
+            self._window.show_info(tr("Заметки о прошивке"), tr("Сначала откройте ROM."))
+            return
+        try:
+            original = self._notes.read(key)
+        except OSError as exc:
+            self._window.set_error(tr("Заметки не прочитаны: {error}", error=exc))
+            return
+        text = self._window.ask_rom_notes(f"{key.file_name} · {key.xmlid}", original, str(self._notes.path(key)))
+        if text is None or text == original:
+            return
+        try:
+            # Пока окно было открыто, ИИ мог дописать заметки — не затирать молча
+            if self._notes.read(key) != original and not self._window.ask_overwrite_notes():
+                return
+            self._notes.write(key, text)
+        except OSError as exc:
+            self._window.set_error(tr("Заметки не сохранены: {error}", error=exc))
+            return
+        self._window.set_status(tr("Заметки о прошивке сохранены"))
+
+    def open_defs_folder(self) -> None:
+        """Файл → Папка definitions: свои дополнения; подхватываются при следующем запуске."""
+        if self._settings is None:
+            return
+        folder = self._settings.definitions_dir
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._window.set_error(tr("Папка не создана: {error}", error=exc))
+            return
+        self._window.open_folder(folder)
+
     def stop_ai_server(self) -> None:
         self._ai.stop()
 
     def _on_ai_applied(self, proposal: EditProposal) -> None:
-        """Правка ИИ записана: окна карты и соседей по общей оси показывают новые значения."""
+        """Правка ИИ записана: окна карты и соседей по общей оси показывают новые значения,
+        окно изменённой карты открывается или поднимается — график следует за ним."""
         editor = self._window.editor_view
         touched = {proposal.map_id, *(name for name, _ in proposal.shared)}
         for map_id in touched & set(editor.open_maps()):
             editor.reload_map(*self._display(map_id))
+        self.select_map(proposal.map_id)
         self._check_changed(*touched)
         self._window.set_status(tr("ИИ изменил карту: {name}", name=proposal.name))
 

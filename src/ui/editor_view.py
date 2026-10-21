@@ -13,6 +13,7 @@ from src.ui.key_bindings import PHYSICAL_CONTROL, KeyBindings
 from src.ui.map.cells import dimension_label
 from src.ui.map.window import MapWindow
 from src.ui.levels import LEVELS, level_color
+from src.ui.unverified import unverified_icon, unverified_pixmap, unverified_tooltip
 
 # Новые окна карт — лесенкой от правого края главного окна
 CASCADE_STEP = 28
@@ -70,6 +71,8 @@ class EditorView(QWidget):
         # Пока автопоказ включён, окно появляется, когда у текущей карты есть график
         self._graph = GraphWindow(self)
         self._graph_enabled = True
+        # Предпросмотр правки ИИ: пока он есть, график показывает его, а не текущую карту
+        self._preview: dict[str, object] | None = None
         self._graph.closed_by_user.connect(self._on_graph_closed)
         self._graph.surface.point_clicked.connect(self._on_graph_point_clicked)
         self._graph.curve.point_clicked.connect(self._on_graph_point_clicked)
@@ -139,11 +142,17 @@ class EditorView(QWidget):
             leaf.setData(0, int(Qt.ItemDataRole.UserRole), info.id)
             leaf.setForeground(1, DIMENSION_COLOR)
             leaf.setTextAlignment(1, int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
+            tips = []
             if info.userlevel in LEVELS:
                 brush = QBrush(level_color(info.userlevel))
                 leaf.setBackground(0, brush)
                 leaf.setBackground(1, brush)
-                leaf.setToolTip(0, tr("Уровень {n} — {name}", n=info.userlevel, name=tr(LEVELS[info.userlevel])))
+                tips.append(tr("Уровень {n} — {name}", n=info.userlevel, name=tr(LEVELS[info.userlevel])))
+            if info.source:
+                leaf.setIcon(0, unverified_icon())
+                tips.append(unverified_tooltip(info.source))
+            if tips:
+                leaf.setToolTip(0, "\n".join(tips))
             categories[info.category].addChild(leaf)
             self._leaves[info.id] = leaf
 
@@ -284,7 +293,29 @@ class EditorView(QWidget):
         if map_id == self._current:
             self._refresh_graph()
 
+    # --- Предпросмотр правки ИИ на графике ---
+
+    def show_graph_preview(self, data: dict[str, object], anchor: QWidget | None = None) -> None:
+        """Показать на графике предложенную правку (аргументы GraphWindow.set_data, с reference —
+        значениями «до»). Окно графика показывается, даже если автопоказ выключен."""
+        self._preview = data
+        if self._graph.set_data(**data) is GraphKind.NONE:  # type: ignore[arg-type]
+            return
+        if not self._graph.isVisible():
+            current = self._windows.get(self._current) if self._current is not None else None
+            self._graph.show_near(current or anchor)
+        self._graph.raise_()
+
+    def clear_graph_preview(self) -> None:
+        """Правка применена или отклонена — график снова следует за текущей картой."""
+        if self._preview is None:
+            return
+        self._preview = None
+        self._refresh_graph()
+
     def _refresh_graph(self) -> None:
+        if self._preview is not None:
+            return
         window = self._windows.get(self._current) if self._current is not None else None
         data = window.graph_data() if window is not None else None
         kind = GraphKind.NONE
@@ -303,6 +334,8 @@ class EditorView(QWidget):
         self.graph_closed.emit()
 
     def _on_graph_point_clicked(self, row: int, col: int, additive: bool) -> None:
+        if self._preview is not None:
+            return
         window = self._windows.get(self._current) if self._current is not None else None
         if window is not None:
             window.select_cell(row, col, additive)
@@ -316,7 +349,9 @@ class EditorView(QWidget):
         if isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
             if obj is self._map_tree:
                 return self._handle_tree_key(event)
-            # Окно графика: клавиши шага — текущей карте
+            # Окно графика: клавиши шага — текущей карте (не во время предпросмотра правки ИИ)
+            if self._preview is not None:
+                return super().eventFilter(obj, event)
             window = self._windows.get(self._current) if self._current is not None else None
             if window is not None and window.handle_step_key(event):
                 return True
@@ -373,6 +408,14 @@ def _legend() -> QWidget:
         chip.setToolTip(tr("Уровень {n} — {name}", n=level, name=tr(name)))
         row.addWidget(chip)
     row.addStretch(1)
+    unverified_icon_label = QLabel()
+    unverified_icon_label.setPixmap(unverified_pixmap())
+    unverified = QLabel(tr("не проверена"))
+    unverified.setStyleSheet("color: #666;")
+    for label in (unverified_icon_label, unverified):
+        label.setToolTip(tr("Карта из дополнения definitions (свои находки, SubaruDefs), а не из RomRaider ecu_defs.xml"))
+        row.addWidget(label)
+    row.addSpacing(6)
     changed = QLabel(tr("{mark} изменена", mark=CHANGED_MARK))
     changed.setStyleSheet(f"color: {CHANGED_COLOR.name()};")
     changed.setToolTip(tr("Жирная карта с ● — значения или оси отличаются от её checkpoint"))

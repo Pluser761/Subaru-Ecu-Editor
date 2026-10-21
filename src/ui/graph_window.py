@@ -72,17 +72,25 @@ class GraphWindow(QWidget):
         x_title: str,
         y_title: str,
         unit: str,
+        reference: list[list[float]] | None = None,
+        title: str | None = None,
     ) -> GraphKind:
-        """Нарисовать карту подходящим видом; вернуть вид (NONE — рисовать нечего)."""
+        """Нарисовать карту подходящим видом; вернуть вид (NONE — рисовать нечего).
+
+        reference — значения «до» правки (предложение ИИ), title — заголовок окна вместо обычного.
+        """
         rows = len(values)
         cols = len(values[0]) if values else 0
         kind = graph_kind(rows, cols)
-        self.setWindowTitle(tr("{name} — график", name=name.strip()) if name.strip() else tr("График"))
+        if title is None:
+            title = tr("{name} — график", name=name.strip()) if name.strip() else tr("График")
+        self.setWindowTitle(title)
         if kind is GraphKind.MESH:
             self.curve.clear()
             self.surface.set_data(
                 values, x_axis, y_axis, selected,
                 x_labels=x_labels, y_labels=y_labels, x_title=x_title, y_title=y_title,
+                reference=reference,
             )
             self._stack.setCurrentWidget(self.surface)
         elif kind is GraphKind.CURVE:
@@ -90,6 +98,7 @@ class GraphWindow(QWidget):
             self.curve.set_data(
                 values, x_axis, y_axis, selected,
                 x_labels=x_labels, y_labels=y_labels, x_title=x_title, y_title=y_title, unit=unit,
+                reference=reference,
             )
             if name != self._name:
                 self.curve.reset_view()

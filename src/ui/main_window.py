@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
+from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QKeySequence
 from PyQt6.QtWidgets import (
     QMainWindow,
     QStackedWidget,
@@ -19,6 +19,7 @@ from src.i18n import Language, tr
 from src.i18n import language as current_language
 from src.ui.editor_view import EditorView
 from src.ui.key_bindings import KeyBindings
+from src.ui.notes_dialog import NotesDialog
 from src.ui.settings_dialog import SettingsDialog
 from src.core.transfer import TransferPlan
 from src.ui.transfer_dialog import TransferDialog, TransferReportDialog
@@ -65,11 +66,14 @@ class MainWindow(QMainWindow):
         self.on_show_tools: Callable[[], None] | None = None
         self.on_transfer_maps: Callable[[], None] | None = None
         self.on_show_switches: Callable[[], None] | None = None
+        self.on_revert_all: Callable[[], None] | None = None
         self.on_unit_system: Callable[[UnitSystem], None] | None = None
         self.on_language: Callable[[Language], None] | None = None
         # Меню «ИИ»: включить/выключить MCP-сервер, как подключиться
         self.on_ai_server: Callable[[bool], None] | None = None
         self.on_ai_help: Callable[[], None] | None = None
+        self.on_ai_notes: Callable[[], None] | None = None
+        self.on_open_defs_folder: Callable[[], None] | None = None
         # Можно ли закрыть окно (несохранённые правки); False — отменить закрытие
         self.on_close_requested: Callable[[], bool] | None = None
         # Перед закрытием окна (сохранение настроек)
@@ -97,6 +101,13 @@ class MainWindow(QMainWindow):
         file_menu.addAction(save_as_action)
 
         file_menu.addSeparator()
+        defs_action = QAction(tr("Папка definitions…"), self)
+        defs_action.setToolTip(tr(
+            "Свои дополнения definitions (RomRaider или EcuFlash, например SubaruDefs); "
+            "подхватываются при следующем запуске"
+        ))
+        defs_action.triggered.connect(lambda: self.on_open_defs_folder and self.on_open_defs_folder())
+        file_menu.addAction(defs_action)
         settings_action = QAction(tr("Настройки…"), self)
         # У Preferences нет стандартной клавиши на Windows — тогда Ctrl+,
         if QKeySequence.keyBindings(QKeySequence.StandardKey.Preferences):
@@ -172,6 +183,11 @@ class MainWindow(QMainWindow):
         transfer_action.triggered.connect(self._emit_transfer_maps)
         maps_menu.addAction(transfer_action)
 
+        revert_action = QAction(tr("Откатить все карты к checkpoint…"), self)
+        revert_action.setToolTip(tr("Вернуть в прошивке значения и оси всех изменённых карт к их checkpoint"))
+        revert_action.triggered.connect(lambda: self.on_revert_all and self.on_revert_all())
+        maps_menu.addAction(revert_action)
+
         switches_action = QAction(tr("Ошибки и переключатели…"), self)
         switches_action.setShortcut(QKeySequence("Ctrl+E"))
         switches_action.triggered.connect(self._emit_show_switches)
@@ -186,6 +202,10 @@ class MainWindow(QMainWindow):
         ai_help_action = QAction(tr("Как подключить Claude…"), self)
         ai_help_action.triggered.connect(lambda: self.on_ai_help and self.on_ai_help())
         ai_menu.addAction(ai_help_action)
+        ai_menu.addSeparator()
+        ai_notes_action = QAction(tr("Заметки о прошивке…"), self)
+        ai_notes_action.triggered.connect(lambda: self.on_ai_notes and self.on_ai_notes())
+        ai_menu.addAction(ai_notes_action)
 
     def closeEvent(self, event: QCloseEvent | None) -> None:
         if self.on_close_requested is not None and not self.on_close_requested():
@@ -299,6 +319,26 @@ class MainWindow(QMainWindow):
     def set_unit_system_checked(self, system: UnitSystem) -> None:
         self._unit_actions[system].setChecked(True)
 
+    def ask_revert(self, names: list[str]) -> bool:
+        """Подтвердить откат карт к checkpoint: правки после checkpoint пропадут."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(tr("Откат к checkpoint"))
+        if len(names) == 1:
+            box.setText(tr("Откатить карту «{name}» к checkpoint?", name=names[0].strip()))
+        else:
+            box.setText(tr("Откатить к checkpoint изменённые карты: {n}?", n=len(names)))
+            box.setDetailedText("\n".join(name.strip() for name in names))
+        box.setInformativeText(
+            tr(
+                "Значения и оси вернутся к checkpoint, правки после него пропадут. "
+                "Общие оси откатятся и у других карт на них."
+            )
+        )
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        return box.exec() == QMessageBox.StandardButton.Yes
+
     def ask_restart_for_language(self) -> bool:
         """Язык меняется после перезапуска: перезапустить сейчас?"""
         answer = QMessageBox.question(
@@ -317,6 +357,26 @@ class MainWindow(QMainWindow):
         self.ai_server_action.blockSignals(True)
         self.ai_server_action.setChecked(enabled)
         self.ai_server_action.blockSignals(False)
+
+    def open_folder(self, folder: Path) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def ask_rom_notes(self, title: str, text: str, location: str) -> str | None:
+        """Окно заметок о прошивке; None — закрыли без сохранения."""
+        dialog = NotesDialog(title, text, location, self)
+        if dialog.exec() != NotesDialog.DialogCode.Accepted:
+            return None
+        return dialog.text()
+
+    def ask_overwrite_notes(self) -> bool:
+        answer = QMessageBox.question(
+            self,
+            tr("Заметки о прошивке"),
+            tr("Пока окно было открыто, заметки изменились (их дописал ИИ). Заменить их вашим текстом?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def show_ai_help(self, url: str, running: bool) -> None:
         state = tr("Сервер запущен.") if running else tr("Сервер выключен: включите «ИИ → MCP-сервер для ИИ».")
