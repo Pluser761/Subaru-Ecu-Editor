@@ -11,7 +11,7 @@ from src.i18n import Language, plural, set_language, tr
 from src.locale.en import EN
 from src.ui.app_settings import AppSettings
 
-ROOT = Path(__file__).resolve().parents[1] / "src"
+ROOT = Path(__file__).resolve().parents[2] / "src"
 
 
 def _tr_literals() -> dict[str, str]:
