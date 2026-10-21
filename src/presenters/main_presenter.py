@@ -18,6 +18,8 @@ from src.core.session import RomSession
 from src.core.units import TableUnits, UnitSystem
 from src.core.transfer import check_compatibility, plan_transfer, render_report, save_report
 from src.core.xml_reader import EcuDefsRepository
+from src.logger.presenter import LoggerPresenter, RomInfo
+from src.logger.ui.window import LoggerWindow
 from src.ui.app_settings import AppSettings
 from src.ui.main_window import MainWindow
 from src.ui.map.cells import describe_shape
@@ -99,6 +101,9 @@ class MainPresenter:
         window.on_ai_help = lambda: window.show_ai_help(self._ai.url, self._ai.running)
         window.on_ai_notes = self.show_notes
         window.on_open_defs_folder = self.open_defs_folder
+        window.on_open_logger = self.open_logger
+        # Логгер — отдельное окно, создаётся при первом открытии
+        self._logger: LoggerPresenter | None = None
         window.set_unit_system_checked(self._units_system)
         window.on_show_editor = window.show_editor
         window.on_show_tools = window.show_tools
@@ -576,6 +581,23 @@ class MainPresenter:
             self._window.set_error(tr("Папка не создана: {error}", error=exc))
             return
         self._window.open_folder(folder)
+
+    def open_logger(self) -> None:
+        """Логгер → Открыть логгер: отдельное окно; прошивка редактора — для сверки ЭБУ и имени лога."""
+        if self._logger is None:
+            self._logger = LoggerPresenter(LoggerWindow(), self._settings, self._logger_rom_info)
+        window = self._logger.window
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def _logger_rom_info(self) -> RomInfo:
+        definition = self._parser.definition
+        return RomInfo(self._parser.file_path, definition.romid.ecuid if definition else None)
+
+    def stop_logger(self) -> None:
+        if self._logger is not None:
+            self._logger.disconnect()
 
     def stop_ai_server(self) -> None:
         self._ai.stop()

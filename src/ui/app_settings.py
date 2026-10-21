@@ -20,6 +20,8 @@ _UNITS = "view/units"
 _LANGUAGE = "ui/language"
 _AI_SERVER = "ai/mcp_enabled"
 _AI_PORT = "ai/port"
+_LOGGER_LOG_DIR = "logger/log_dir"
+_LOGGER_PORT = "logger/port"
 # Старый ключ (положение + размер): положение больше не сохраняется — окно встаёт под картой
 _GRAPH_GEOMETRY_OLD = "graph/geometry"
 
@@ -54,6 +56,35 @@ class AppSettings:
         """Свои дополнения definitions редактора (например, SubaruDefs) — `definitions/editor/extra`
         рядом с settings.ini, как definitions/editor/extra в репозитории."""
         return Path(self.file_name).parent / "definitions" / "editor" / "extra"
+
+    @property
+    def logger_extra_dir(self) -> Path:
+        """Свои параметры логгера — `definitions/logger/extra` рядом с settings.ini."""
+        return Path(self.file_name).parent / "definitions" / "logger" / "extra"
+
+    @property
+    def logger_trace_dir(self) -> Path:
+        """Журналы обмена с адаптером (отладка подключения) — `logger_traces` рядом с settings.ini."""
+        return Path(self.file_name).parent / "logger_traces"
+
+    # --- Логгер ---
+
+    def logger_log_dir(self) -> str | None:
+        """Папка логов, выбранная пользователем; None — по умолчанию (logs рядом с прошивкой)."""
+        value = self._settings.value(_LOGGER_LOG_DIR)
+        return str(value) if value else None
+
+    def set_logger_log_dir(self, folder: str) -> None:
+        self._settings.setValue(_LOGGER_LOG_DIR, folder)
+        self._settings.sync()
+
+    def logger_port(self) -> str | None:
+        value = self._settings.value(_LOGGER_PORT)
+        return str(value) if value else None
+
+    def set_logger_port(self, port: str) -> None:
+        self._settings.setValue(_LOGGER_PORT, port)
+        self._settings.sync()
 
     # --- Клавиши ---
 

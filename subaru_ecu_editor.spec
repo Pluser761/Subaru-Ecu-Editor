@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Сборка PyInstaller: pyinstaller subaru_ecu_editor.spec → dist/SubaruEcuEditor/
 # (на macOS ещё dist/SubaruEcuEditor.app). Иконки — assets/ (исходник icon.svg).
-# definitions/editor (ecu_defs.xml и extra/) кладётся рядом с пакетом src: main_presenter.DEFAULT_DEFS
+# definitions/editor и definitions/logger кладутся рядом с пакетом src: main_presenter.DEFAULT_DEFS
 # ищет его относительно своего файла, в сборке это корень _internal.
 import re
 import sys
@@ -17,6 +17,7 @@ a = Analysis(
     datas=[
         ("definitions/editor/ecu_defs.xml", "definitions/editor"),
         ("definitions/editor/extra", "definitions/editor/extra"),
+        ("definitions/logger", "definitions/logger"),
         ("assets/icon.png", "assets"),
     ],
     hiddenimports=hiddenimports,

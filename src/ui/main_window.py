@@ -74,6 +74,7 @@ class MainWindow(QMainWindow):
         self.on_ai_help: Callable[[], None] | None = None
         self.on_ai_notes: Callable[[], None] | None = None
         self.on_open_defs_folder: Callable[[], None] | None = None
+        self.on_open_logger: Callable[[], None] | None = None
         # Можно ли закрыть окно (несохранённые правки); False — отменить закрытие
         self.on_close_requested: Callable[[], bool] | None = None
         # Перед закрытием окна (сохранение настроек)
@@ -192,6 +193,13 @@ class MainWindow(QMainWindow):
         switches_action.setShortcut(QKeySequence("Ctrl+E"))
         switches_action.triggered.connect(self._emit_show_switches)
         maps_menu.addAction(switches_action)
+
+        logger_menu = menu.addMenu(tr("&Логгер"))
+        assert logger_menu is not None
+        logger_action = QAction(tr("Открыть логгер…"), self)
+        logger_action.setShortcut(QKeySequence("Ctrl+L"))
+        logger_action.triggered.connect(lambda: self.on_open_logger and self.on_open_logger())
+        logger_menu.addAction(logger_action)
 
         ai_menu = menu.addMenu(tr("&ИИ"))
         assert ai_menu is not None
