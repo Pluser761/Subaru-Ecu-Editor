@@ -11,7 +11,7 @@ from src.core.parser import EcuParser
 from src.core.xml_reader import EcuDefsRepository
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFS = ROOT / "definitions" / "ecu_defs.xml"
+DEFS = ROOT / "definitions" / "editor" / "ecu_defs.xml"
 JDM_ROM = ROOT / "ecu" / "AZ1G301F-2008-JDM-Subaru-Impreza-STI.hex"
 EDM_ROM = ROOT / "ecu" / "A4TE300D-2005-EDM-Subaru-Impreza-WRX-MT-AT.hex"
 

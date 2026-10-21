@@ -132,6 +132,8 @@ def test_definition_files_skip_metric(defs: tuple[Path, Path]) -> None:
     _main, extra = defs
     labels = [label for _path, label in definition_files([extra])]
     assert "extra/custom.xml" in labels
+    assert [label for _p, label in definition_files([(extra / "custom.xml", "user"), (extra / "SubaruDefs", "user")])][:2] == [
+        "user/custom.xml", "user/Bases/EFBASE.xml"]
     assert "extra/SubaruDefs/TEST0001.xml" in labels
     assert not any("metric" in label for label in labels)
 
@@ -179,7 +181,7 @@ def test_ecuflash_only_rom_is_identified(defs: tuple[Path, Path]) -> None:
 def test_bundled_extra_for_az1g101m() -> None:
     if not STOCK_101M.is_file():
         pytest.skip(f"нет прошивки {STOCK_101M.name}")
-    repo = EcuDefsRepository.load(ROOT / "definitions" / "ecu_defs.xml", [ROOT / "definitions" / "extra"])
+    repo = EcuDefsRepository.load(ROOT / "definitions" / "editor" / "ecu_defs.xml", [ROOT / "definitions" / "editor" / "extra"])
     parser = EcuParser.open_rom(STOCK_101M, "", defs_repo=repo)
     table = parser.load_table("Overrun Fueling Cut Counter RPM Threshold")
     assert [row[0] for row in table.values] == [1800.0, 2800.0, 4500.0]

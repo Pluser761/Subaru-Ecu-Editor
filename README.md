@@ -25,12 +25,12 @@ python main.py
 
 ### Дополнительные definitions
 
-Кроме `definitions/ecu_defs.xml` (RomRaider) редактор читает дополнения — все `*.xml`
+Кроме `definitions/editor/ecu_defs.xml` (RomRaider) редактор читает дополнения — все `*.xml`
 (рекурсивно) из двух папок:
 
-- `definitions/extra/` — из репозитория и сборки: свои находки, которых нет в RomRaider
+- `definitions/editor/extra/` — из репозитория и сборки (в справке карты — «extra/…»): свои находки, которых нет в RomRaider
   (сейчас `AZ1G101M.xml` — отсечка топлива на сбросе газа, найденная дизассемблером);
-- `definitions/` рядом с settings.ini (**Файл → Папка definitions…** открывает её) — свои
+- `definitions/editor/extra/` рядом с settings.ini (**Файл → Папка definitions…** открывает её; в справке — «user/…») — свои
   файлы, например [SubaruDefs](https://github.com/TD-D/SubaruDefs): достаточно положить туда
   папку `ECUFlash/subaru standard` целиком.
 
@@ -58,7 +58,7 @@ GitHub Actions (`.github/workflows/windows-build.yml`) на каждый push в
 pull request и ручной запуск гоняет тесты на Windows и собирает программу PyInstaller'ом
 (`subaru_ecu_editor.spec`). Результат — артефакт `SubaruEcuEditor-<версия>-windows.zip` у
 запуска workflow: распаковать и запустить `SubaruEcuEditor.exe`, Python не нужен.
-`definitions/ecu_defs.xml` и `definitions/extra/` уже внутри сборки. Локально то же самое:
+`definitions/editor/` (ecu_defs.xml и extra/) уже внутри сборки. Локально то же самое:
 `pip install pyinstaller && pyinstaller subaru_ecu_editor.spec` → `dist/SubaruEcuEditor/`.
 На macOS spec дополнительно собирает `dist/SubaruEcuEditor.app` (версия в Info.plist — из
 `src/version.py`, для не-релизных сборок `0.0.0`).
@@ -401,8 +401,8 @@ Checkpoint и несохранённые правки ROM между запус�
 
 ```
 main.py                      точка входа: QApplication + MainWindow + MainPresenter
-definitions/ecu_defs.xml     RomRaider definitions (v0.8.3.1b, ~670 <rom>, из них ~330 child)
-definitions/extra/           свои дополнения к ним (только новые таблицы), см. «Дополнительные definitions»
+definitions/editor/          описания карт: ecu_defs.xml — RomRaider (v0.8.3.1b, ~670 <rom>, ~330 child),
+                             extra/ — свои дополнения (только новые таблицы), см. «Дополнительные definitions»
 tests/                       pytest; conftest.py — общее (Qt offscreen)
   editor/                    редактор: ядро, модель таблицы, сессия (на прошивках из ecu/, если есть)
 src/
@@ -482,7 +482,7 @@ MVP со слоем сценариев и Qt Model/View для таблиц:
 ### Как открывается ROM
 
 1. `MainPresenter.open_rom` при первом вызове лениво загружает `EcuDefsRepository`
-   из `definitions/ecu_defs.xml` и дополнений (`definitions/extra/`, папка рядом с settings.ini).
+   из `definitions/editor/ecu_defs.xml` и дополнений (`definitions/editor/extra/` в сборке и рядом с settings.ini).
 2. `EcuDefsRepository.match` перебирает child-описания: сверяет `filesize` и строку
    `internalidstring` по адресу `internalidaddress`; не нашлось — описания EcuFlash.
 3. `resolve` мержит найденное child-описание с его base (рекурсивно), затем добавляются
@@ -505,4 +505,4 @@ MVP со слоем сценариев и Qt Model/View для таблиц:
 
 Изменение калибровок ЭБУ может повредить двигатель и сделать поведение автомобиля
 опасным. Описания RomRaider распространяются «как есть» — см. дисклеймер в начале
-`definitions/ecu_defs.xml`.
+`definitions/editor/ecu_defs.xml`.

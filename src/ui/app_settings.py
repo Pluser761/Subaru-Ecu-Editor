@@ -50,9 +50,10 @@ class AppSettings:
         return Path(self.file_name).parent / "notes"
 
     @property
-    def definitions_dir(self) -> Path:
-        """Свои дополнения definitions (например, SubaruDefs) — папка `definitions` рядом с settings.ini."""
-        return Path(self.file_name).parent / "definitions"
+    def editor_extra_dir(self) -> Path:
+        """Свои дополнения definitions редактора (например, SubaruDefs) — `definitions/editor/extra`
+        рядом с settings.ini, как definitions/editor/extra в репозитории."""
+        return Path(self.file_name).parent / "definitions" / "editor" / "extra"
 
     # --- Клавиши ---
 

@@ -254,24 +254,26 @@ def merge_rom_definitions(base: RomDefinition, child: RomDefinition) -> RomDefin
     return RomDefinition(romid=romid, tables=tables)
 
 
-def definition_files(paths: Iterable[str | Path]) -> list[tuple[Path, str]]:
+def definition_files(paths: Iterable[str | Path | tuple[str | Path, str]]) -> list[tuple[Path, str]]:
     """XML-файлы дополнений и их подписи («extra/AZ1G101M.xml»): файлы как есть,
-    папки — рекурсивно по алфавиту, подпись — путь от папки вместе с её именем.
+    папки — рекурсивно по алфавиту, подпись — путь от папки с её именем впереди
+    (или со своей подписью: `(папка, "user")` → «user/…»).
 
     Папки с «metric» в имени пропускаются: в SubaruDefs это копии тех же описаний
     в метрических единицах, а редактор ждёт единицы definitions (psi, °F) и
     пересчитывает их сам (View → Единицы).
     """
     files: list[tuple[Path, str]] = []
-    for raw in paths:
+    for item in paths:
+        raw, prefix = item if isinstance(item, tuple) else (item, None)
         path = Path(raw)
         if path.is_file():
-            files.append((path, path.name))
+            files.append((path, f"{prefix}/{path.name}" if prefix else path.name))
         elif path.is_dir():
             for file in sorted(path.rglob("*.xml")):
                 relative = file.relative_to(path)
                 if not any("metric" in part.lower() for part in relative.parts[:-1]):
-                    files.append((file, (Path(path.name) / relative).as_posix()))
+                    files.append((file, (Path(prefix or path.name) / relative).as_posix()))
     return files
 
 
@@ -294,7 +296,9 @@ class EcuDefsRepository:
         self.extra_files: list[Path] = []
 
     @classmethod
-    def load(cls, path: str | Path, extra: Iterable[str | Path] = ()) -> EcuDefsRepository:
+    def load(
+        cls, path: str | Path, extra: Iterable[str | Path | tuple[str | Path, str]] = ()
+    ) -> EcuDefsRepository:
         repo = cls(path)
         repo._parse()
         for file, label in definition_files(extra):

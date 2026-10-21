@@ -24,7 +24,7 @@ from src.ui.map.cells import describe_shape
 from src.ui.map.window import MapWindow
 from src.ui.switches_window import SwitchesWindow
 
-DEFAULT_DEFS = Path(__file__).resolve().parents[2] / "definitions" / "ecu_defs.xml"
+DEFAULT_DEFS = Path(__file__).resolve().parents[2] / "definitions" / "editor" / "ecu_defs.xml"
 # Дополнения из сборки: таблицы, которых нет в ecu_defs.xml (core.xml_reader.EcuDefsRepository)
 DEFAULT_EXTRA_DEFS = DEFAULT_DEFS.parent / "extra"
 
@@ -59,9 +59,10 @@ class MainPresenter:
         self._session = RomSession(parser or EcuParser())
         self._defs_path = Path(defs_path) if defs_path else DEFAULT_DEFS
         # Папки дополнений: из сборки (только для стандартного ecu_defs.xml) и свои — рядом с settings.ini
-        self._extra_defs: list[Path] = [DEFAULT_EXTRA_DEFS] if defs_path is None else []
+        # Подписи источника: «extra/…» — из сборки, «user/…» — своя папка
+        self._extra_defs: list[tuple[Path, str]] = [(DEFAULT_EXTRA_DEFS, "extra")] if defs_path is None else []
         if settings is not None:
-            self._extra_defs.append(settings.definitions_dir)
+            self._extra_defs.append((settings.editor_extra_dir, "user"))
         self._defs_repo: EcuDefsRepository | None = None
         # Карты, ждущие перепроверки «изменена ли» (отметка в дереве) — отложенно, пачкой
         self._to_check: set[str] = set()
@@ -568,7 +569,7 @@ class MainPresenter:
         """Файл → Папка definitions: свои дополнения; подхватываются при следующем запуске."""
         if self._settings is None:
             return
-        folder = self._settings.definitions_dir
+        folder = self._settings.editor_extra_dir
         try:
             folder.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
