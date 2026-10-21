@@ -4,6 +4,7 @@ import ast
 import math
 import operator
 from functools import lru_cache
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -36,6 +37,16 @@ def eval_expression(expression: str, x: float) -> float:
     except ZeroDivisionError:
         # «96560.6/x» при x=0: RomRaider показывает Infinity — делаем так же,
         # чтобы одна ячейка не роняла загрузку всей таблицы
+        return math.inf
+
+
+def eval_names(expression: str, names: Mapping[str, float]) -> float:
+    """То же, но с несколькими переменными: формулы логгера ссылаются на другие
+    параметры («(P12*60)/P8»). Неизвестное имя — ValueError, деление на 0 — inf."""
+    tree = _parse(expression.strip())
+    try:
+        return float(_eval_node(tree.body, {k: float(v) for k, v in names.items()}))
+    except ZeroDivisionError:
         return math.inf
 
 

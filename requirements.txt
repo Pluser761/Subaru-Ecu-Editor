@@ -3,6 +3,7 @@ pydantic
 pyqtgraph
 PyOpenGL
 numpy
+pyserial
 mcp>=2.3
 mypy
 pytest
