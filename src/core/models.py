@@ -36,6 +36,8 @@ class CalibrationTable(BaseModel):
     category: str = ""
     userlevel: int | None = None
     storage: str = ""  # «uint8 · 0xC0E58»
+    # Файл дополнения definitions, откуда таблица; пусто — основной ecu_defs.xml
+    source: str = ""
     # Формула из definitions (scaling выше может быть пересчитан в экранные единицы)
     formula: str = ""
     # Знаков после точки на экране: значения и оси (bar — 3, остальное — 2)
@@ -87,6 +89,8 @@ class MapInfo(BaseModel):
     unit: str = ""
     table_type: str = "3D"
     userlevel: int | None = None
+    # Файл дополнения definitions; пусто — основной ecu_defs.xml (иначе карта «не проверена»)
+    source: str = ""
 
 
 class Scaling(BaseModel):
@@ -126,6 +130,8 @@ class TableDef(BaseModel):
     userlevel: int | None = None
     # Switch: варианты байтов по имени состояния («on» / «off»), hex без пробелов
     states: dict[str, str] = Field(default_factory=dict)
+    # Файл дополнения, из которого взята таблица; пусто — основной ecu_defs.xml
+    source: str = ""
 
 
 class RomId(BaseModel):

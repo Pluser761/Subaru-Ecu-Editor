@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Дополнение к definitions/ecu_defs.xml для AZ1G101M (2009-10 EDM Forester XT MT): таблицы,
+     которых нет в RomRaider. Редактор добавляет их к описанию с тем же xmlid; таблицы с именем
+     или адресом, уже описанными в ecu_defs.xml, не перекрываются (src/core/xml_reader.py). -->
+<roms>
+ <rom>
+  <romid>
+   <xmlid>AZ1G101M</xmlid>
+  </romid>
+  <!-- Decel fuel cut: found by disassembly of AZ1G101M (0x34AD8 delays, 0x349CA stages), not in RomRaider defs.
+       On closed throttle a counter (RAM 0xFFFF7778) runs; cylinders are cut 1 -> 2 -> all as it passes
+       T1 = D1, T2 = D1 + D2, T3 = T2 + D3. D1..D3 are picked by gear (RAM 0xFFFF6A18; 4th and 5th share a row)
+       and by engine speed range (boundaries in "Overrun Fueling Cut Counter RPM Threshold").
+       Tick is assumed 8 ms (round values 625 = 5 s, 250 = 2 s elsewhere in the same code; the 0xFFFF5F8C
+       counter in the same code runs at exactly 8 ms per count in logs of 2026-10-20). -->
+  <table type="3D" name="Decel Fuel Cut Delay - 1st Cylinder" category="Fueling - Decel Fuel Cut" storagetype="uint16" endian="big" sizex="4" sizey="4" userlevel="4" storageaddress="0xC7542">
+   <scaling units="Delay (ms)" expression="x*8" to_byte="x/8" format="#" fineincrement="8" coarseincrement="40" />
+   <table type="Static X Axis" name="Engine Speed (RPM)" sizex="4">
+    <data>&lt;1800</data>
+    <data>1800-2800</data>
+    <data>2800-4500</data>
+    <data>&gt;=4500</data>
+   </table>
+   <table type="Static Y Axis" name="Gear" sizey="4">
+    <data>1</data>
+    <data>2</data>
+    <data>3</data>
+    <data>4-5</data>
+   </table>
+   <description>How decel fuel cut works here: after the throttle closes, a timer starts; fuel is cut in one cylinder after D1, in a second cylinder D2 later, and in all cylinders D3 after that (the cut is staged so the car does not jerk). This table is D1: how long fuel keeps flowing after you lift off, by gear and engine speed. Bigger value = later cut (softer, more fuel into a hot exhaust: more pops on overrun); smaller = earlier cut (more engine braking). This is the normal table; the '(Alt)' copy replaces it under a condition that is not identified. Confirmed in code: address, layout, gear/RPM selection. Not confirmed: the time unit (8 ms per step: the same tick as the time-since-start counter, which logs confirm at 8 ms, but this timer itself is not measured yet), which of Normal/Alt is used while driving - check with a log.</description>
+  </table>
+  <table type="3D" name="Decel Fuel Cut Delay - 1st Cylinder (Alt)" category="Fueling - Decel Fuel Cut" storagetype="uint16" endian="big" sizex="4" sizey="4" userlevel="4" storageaddress="0xC756C">
+   <scaling units="Delay (ms)" expression="x*8" to_byte="x/8" format="#" fineincrement="8" coarseincrement="40" />
+   <table type="Static X Axis" name="Engine Speed (RPM)" sizex="4">
+    <data>&lt;1800</data>
+    <data>1800-2800</data>
+    <data>2800-4500</data>
+    <data>&gt;=4500</data>
+   </table>
+   <table type="Static Y Axis" name="Gear" sizey="4">
+    <data>1</data>
+    <data>2</data>
+    <data>3</data>
+    <data>4-5</data>
+   </table>
+   <description>Alternative copy of 'Decel Fuel Cut Delay - 1st Cylinder' (D1, by gear and engine speed). The ECU switches to it when RAM 0xFFFF6168 is not 0; what that flag means is not known yet. If you change the delays, change both tables the same way until a log shows which one is active.</description>
+  </table>
+  <table type="2D" name="Decel Fuel Cut Delay - 1st Cylinder (Special)" category="Fueling - Decel Fuel Cut" storagetype="uint16" endian="big" sizey="4" userlevel="4" storageaddress="0xC7564">
+   <scaling units="Delay (ms)" expression="x*8" to_byte="x/8" format="#" fineincrement="8" coarseincrement="40" />
+   <table type="Static Y Axis" name="Engine Speed (RPM)" sizey="4">
+    <data>&lt;1800</data>
+    <data>1800-2800</data>
+    <data>2800-4500</data>
+    <data>&gt;=4500</data>
+   </table>
+   <description>D1 (delay before the first cylinder is cut) used instead of the per-gear tables in a special mode, by engine speed only. The mode is active when function 0x22BAE returns 0 and more than 'Decel Fuel Cut Special Condition Threshold' (0.3 s) has passed since engine start - so in practice it is decided by 0x22BAE alone. What the mode is in real driving is not identified; it is not neutral (neutral uses 'Decel Fuel Cut Delay (Neutral)').</description>
+  </table>
+  <table type="2D" name="Decel Fuel Cut Delay - 1st Cylinder (Special)(Alt)" category="Fueling - Decel Fuel Cut" storagetype="uint16" endian="big" sizey="4" userlevel="4" storageaddress="0xC758C">
+   <scaling units="Delay (ms)" expression="x*8" to_byte="x/8" format="#" fineincrement="8" coarseincrement="40" />
+   <table type="Static Y Axis" name="Engine Speed (RPM)" sizey="4">
+    <data>&lt;1800</data>
+    <data>1800-2800</data>
+    <data>2800-4500</data>
+    <data>&gt;=4500</data>
+   </table>
+   <description>Alternative copy of 'Decel Fuel Cut Delay - 1st Cylinder (Special)', used when RAM 0xFFFF6168 is not 0 (flag meaning not known).</description>
+  </table>
+  <table type="3D" name="Decel Fuel Cut Delay - 2nd Cylinder / All Cylinders" category="Fueling - Decel Fuel Cut" storagetype="uint16" endian="big" sizex="10" sizey="4" userlevel="4" storageaddress="0xC7594">
+   <scaling units="Delay (ms)" expression="x*8" to_byte="x/8" format="#" fineincrement="8" coarseincrement="40" />
+   <table type="Static X Axis" name="Gear / Step" sizex="10">
+    <data>1: 2nd cyl</data>
+    <data>1: all</data>
+    <data>2: 2nd cyl</data>
+    <data>2: all</data>
+    <data>3: 2nd cyl</data>
+    <data>3: all</data>
+    <data>4-5: 2nd cyl</data>
+    <data>4-5: all</data>
+    <data>Special: 2nd cyl</data>
+    <data>Special: all</data>
+   </table>
+   <table type="Static Y Axis" name="Engine Speed (RPM)" sizey="4">
+    <data>&lt;1800</data>
+    <data>1800-2800</data>
+    <data>2800-4500</data>
+    <data>&gt;=4500</data>
+   </table>
+   <description>How decel fuel cut works here: after the throttle closes, a timer starts; fuel is cut in one cylinder after D1, in a second cylinder D2 later, and in all cylinders D3 after that (the cut is staged so the car does not jerk). This table holds D2 ('2nd cyl' columns: from the first cut cylinder to the second) and D3 ('all' columns: from the second until fuel is cut in all cylinders), per gear plus the 'Special' mode, by engine speed. Total time until full cut = D1 + D2 + D3. Confirmed in code: address, layout, the 1 -> 2 -> all staging. Not confirmed: the time unit (8 ms per step: the same tick as the time-since-start counter, which logs confirm at 8 ms, but this timer itself is not measured yet).</description>
+  </table>
+  <table type="3D" name="Decel Fuel Cut Delay - 2nd Cylinder / All Cylinders (Alt)" category="Fueling - Decel Fuel Cut" storagetype="uint16" endian="big" sizex="10" sizey="4" userlevel="4" storageaddress="0xC75E4">
+   <scaling units="Delay (ms)" expression="x*8" to_byte="x/8" format="#" fineincrement="8" coarseincrement="40" />
+   <table type="Static X Axis" name="Gear / Step" sizex="10">
+    <data>1: 2nd cyl</data>
+    <data>1: all</data>
+    <data>2: 2nd cyl</data>
+    <data>2: all</data>
+    <data>3: 2nd cyl</data>
+    <data>3: all</data>
+    <data>4-5: 2nd cyl</data>
+    <data>4-5: all</data>
+    <data>Special: 2nd cyl</data>
+    <data>Special: all</data>
+   </table>
+   <table type="Static Y Axis" name="Engine Speed (RPM)" sizey="4">
+    <data>&lt;1800</data>
+    <data>1800-2800</data>
+    <data>2800-4500</data>
+    <data>&gt;=4500</data>
+   </table>
+   <description>Alternative copy of 'Decel Fuel Cut Delay - 2nd Cylinder / All Cylinders' (D2 and D3), used when RAM 0xFFFF6168 is not 0 (flag meaning not known).</description>
+  </table>
+  <table type="2D" name="Overrun Fueling Cut Counter RPM Threshold" category="Fueling - Decel Fuel Cut" storagetype="float" endian="little" sizey="3" userlevel="4" storageaddress="0xC7D6C">
+   <scaling units="RPM" expression="x" to_byte="x" format="#" fineincrement="50" coarseincrement="100" />
+   <table type="Static Y Axis" name="Range Boundary" sizey="3">
+    <data>1</data>
+    <data>2</data>
+    <data>3</data>
+   </table>
+   <description>Engine speed boundaries that split the decel fuel cut delay tables into ranges: below 1st value, between 1st and 2nd, between 2nd and 3rd, above 3rd. These are the 'Engine Speed' ranges in the 'Decel Fuel Cut Delay' tables, so if you move a boundary, the meaning of those rows/columns moves with it. Confirmed: in code and in SubaruDefs (same table on AZ1G101N, address 0xC7B94 there).</description>
+  </table>
+  <table type="2D" name="Decel Fuel Cut Delay (Neutral)" category="Fueling - Decel Fuel Cut" storagetype="uint16" endian="big" sizey="1" userlevel="3" storageaddress="0xC7540">
+   <scaling units="Delay (ms)" expression="x*8" to_byte="x/8" format="#" fineincrement="8" coarseincrement="40" />
+   <table type="Static Y Axis" name="Delay" sizey="1">
+    <data>D1</data>
+   </table>
+   <description>Delay used in neutral instead of all the per-gear tables: fuel is cut in all cylinders at once after this time (no staging), at any engine speed. Neutral comes from RAM 0xFFFF67CB = 1, the gearbox neutral switch (confirmed by the owner and by logs: 1 at idle in neutral, short pulses while shifting). Stock value is about 0.1 s, so on a blip in neutral fuel is cut almost at once and comes back at the resume threshold (about 2000 RPM at a standstill, see 'Overrun Fueling RPM Resume Threshold'); this lean cut-and-resume is the likely cause of pops when revving in neutral. A bigger value keeps fuel on during short blips (fewer pops, slower RPM drop).</description>
+  </table>
+  <table type="2D" name="Decel Fuel Cut Special Condition Threshold" category="Fueling - Decel Fuel Cut" storagetype="uint16" endian="big" sizey="1" userlevel="5" storageaddress="0xC7562">
+   <scaling units="s" expression="x*.008" to_byte="x/.008" format="0.000" fineincrement="0.008" coarseincrement="0.08" />
+   <table type="Static Y Axis" name="Threshold" sizey="1">
+    <data>Time since engine start at least</data>
+   </table>
+   <description>Threshold for the 'Special' delay mode: the mode needs RAM 0xFFFF5F8C to be at least this value. 0xFFFF5F8C is the time since engine start: 8 ms per count, stops at 65535 (about 524 s); confirmed by logs. Stock 38 counts = 0.3 s, so this condition is met almost always and the mode is really decided by the other check (function 0x22BAE, not identified). Leave as is.</description>
+  </table>
+  <table type="2D" name="Overrun Fueling RPM Resume Threshold" category="Fueling - Decel Fuel Cut" storagetype="uint16" endian="big" sizey="16" userlevel="4" storageaddress="0xCA4C8">
+   <scaling units="RPM" expression="x*.1953125" to_byte="x/.1953125" format="#" fineincrement="50" coarseincrement="100" />
+   <table type="Y Axis" name="Coolant Temperature" storagetype="float" endian="little" storageaddress="0xC7E2C" logparam="P2">
+    <scaling units="Degrees F" expression="(x*1.8)+32" to_byte="(x-32)/1.8" format="#" fineincrement="1" coarseincrement="5" />
+   </table>
+   <description>Engine speed at which fuel cut is allowed and below which the injectors switch back on when coasting with the throttle closed, by coolant temperature (cold engine - higher, warm - 900 RPM). Raise it if the engine stumbles or stalls when fuel comes back; lower it for longer fuel cut. The code adds to it: +1100 RPM when vehicle speed is below 17 (unit not confirmed), plus hysteresis, so at a standstill, in neutral, fuel comes back at about 2000 RPM with a warm engine; logs agree with this. The offsets are not exposed as tables yet (floats 0xC7D30-0xC7D68). Confirmed: in code and in SubaruDefs (same table on AZ1G101N, address 0xCA2F0 there).</description>
+  </table>
+  <table type="2D" name="Overrun Enrich RPM Delta Activation" category="Fueling - Decel Fuel Cut" storagetype="float" endian="little" sizey="1" userlevel="5" storageaddress="0xC7D18">
+   <scaling units="Raw" expression="x" to_byte="x" format="0.0" fineincrement="1" coarseincrement="5" />
+   <table type="Static Y Axis" name="OverRun" sizey="1">
+    <data>RPM Delta</data>
+   </table>
+   <description>Taken from SubaruDefs for AZ1G101N (0xC7B40 there; the address is moved by the same +0x1D8 as the other overrun tables and the value matches). SubaruDefs: the RPM change needed to turn on the extra fuel when fueling resumes after overrun. Not checked in code. Leave as is.</description>
+  </table>
+  <table type="2D" name="Overrun initial injector enrichment (pulsewidth)" category="Fueling - Decel Fuel Cut" storagetype="float" endian="little" sizey="1" userlevel="5" storageaddress="0xC7D1C">
+   <scaling units="ms" expression="x*.001" to_byte="x/.001" format="0.00" fineincrement="0.01" coarseincrement="0.1" />
+   <table type="Static Y Axis" name="OverRun" sizey="1">
+    <data>Initial Enrichment (pulsewidth)</data>
+   </table>
+   <description>Taken from SubaruDefs for AZ1G101N (0xC7B44 there; the address is moved by the same +0x1D8 as the other overrun tables and the value matches). SubaruDefs: the extra injector pulse added at the moment fueling resumes after overrun, so the engine picks up smoothly. Not checked in code. Leave as is.</description>
+  </table>
+ </rom>
+</roms>

@@ -98,6 +98,7 @@ class EcuParser:
                     unit=unit,
                     table_type=table.table_type,
                     userlevel=table.userlevel,
+                    source=table.source,
                 )
             )
         maps.sort(key=lambda m: (m.category, m.name))
@@ -263,6 +264,7 @@ class EcuParser:
             category=table.category,
             userlevel=table.userlevel,
             storage=f"{table.storagetype} · 0x{table.storageaddress:X}" if table.storageaddress is not None else "",
+            source=table.source,
         )
 
 

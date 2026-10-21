@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable
 from pathlib import Path
 
+from src.core.ecuflash_reader import EcuFlashLibrary, is_ecuflash_file
 from src.core.models import (
     AxisDef,
     RomDefinition,
@@ -11,6 +14,8 @@ from src.core.models import (
     TableDef,
 )
 
+
+log = logging.getLogger(__name__)
 
 EDITABLE_TABLE_TYPES = frozenset({"3D", "2D", "1D"})
 
@@ -201,6 +206,7 @@ def _merge_table(base: TableDef, overlay: TableDef) -> TableDef:
         description=overlay.description or base.description,
         userlevel=overlay.userlevel if overlay.userlevel is not None else base.userlevel,
         states=overlay.states or base.states,
+        source=overlay.source or base.source,
     )
 
 
@@ -248,36 +254,90 @@ def merge_rom_definitions(base: RomDefinition, child: RomDefinition) -> RomDefin
     return RomDefinition(romid=romid, tables=tables)
 
 
+def definition_files(paths: Iterable[str | Path]) -> list[tuple[Path, str]]:
+    """XML-файлы дополнений и их подписи («extra/AZ1G101M.xml»): файлы как есть,
+    папки — рекурсивно по алфавиту, подпись — путь от папки вместе с её именем.
+
+    Папки с «metric» в имени пропускаются: в SubaruDefs это копии тех же описаний
+    в метрических единицах, а редактор ждёт единицы definitions (psi, °F) и
+    пересчитывает их сам (View → Единицы).
+    """
+    files: list[tuple[Path, str]] = []
+    for raw in paths:
+        path = Path(raw)
+        if path.is_file():
+            files.append((path, path.name))
+        elif path.is_dir():
+            for file in sorted(path.rglob("*.xml")):
+                relative = file.relative_to(path)
+                if not any("metric" in part.lower() for part in relative.parts[:-1]):
+                    files.append((file, (Path(path.name) / relative).as_posix()))
+    return files
+
+
 class EcuDefsRepository:
-    """Индекс RomRaider ecu_defs.xml."""
+    """Индекс definitions: основной RomRaider ecu_defs.xml и файлы дополнений.
+
+    Дополнения (RomRaider `<roms>` или EcuFlash `<rom>`, например SubaruDefs) только
+    добавляют таблицы: имя или адрес, которые уже есть в основном описании, не
+    перекрываются. Описание, которого нет в основном файле, опознаётся по дополнению.
+    """
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.bases: dict[str, RomDefinition] = {}
         self.children: list[RomDefinition] = []
         self._by_xmlid: dict[str, RomDefinition] = {}
+        # Дополнения RomRaider к описаниям основного файла: xmlid → [описание]
+        self._overlays: dict[str, list[RomDefinition]] = {}
+        self._ecuflash = EcuFlashLibrary()
+        self.extra_files: list[Path] = []
 
     @classmethod
-    def load(cls, path: str | Path) -> EcuDefsRepository:
+    def load(cls, path: str | Path, extra: Iterable[str | Path] = ()) -> EcuDefsRepository:
         repo = cls(path)
         repo._parse()
+        for file, label in definition_files(extra):
+            repo._load_extra(file, label)
         return repo
 
     def _parse(self) -> None:
         tree = ET.parse(self.path)
-        root = tree.getroot()
-        for rom_el in root.findall("rom"):
-            base_name = rom_el.attrib.get("base")
-            romid = _parse_romid(rom_el, base_name)
-            tables = _tables_from_rom_el(rom_el)
-            definition = RomDefinition(romid=romid, tables=tables)
-            if not romid.xmlid:
-                continue
-            self._by_xmlid[romid.xmlid] = definition
-            if base_name:
-                self.children.append(definition)
+        for rom_el in tree.getroot().findall("rom"):
+            self._add_rom_el(rom_el)
+
+    def _add_rom_el(self, rom_el: ET.Element, source: str = "") -> RomDefinition | None:
+        base_name = rom_el.attrib.get("base")
+        romid = _parse_romid(rom_el, base_name)
+        if not romid.xmlid:
+            return None
+        tables = _tables_from_rom_el(rom_el)
+        if source:
+            tables = {n: t.model_copy(update={"source": source}) for n, t in tables.items()}
+        definition = RomDefinition(romid=romid, tables=tables)
+        if source and romid.xmlid in self._by_xmlid:
+            self._overlays.setdefault(romid.xmlid, []).append(definition)
+            return definition
+        self._by_xmlid[romid.xmlid] = definition
+        if base_name:
+            self.children.append(definition)
+        else:
+            self.bases[romid.xmlid] = definition
+        return definition
+
+    def _load_extra(self, file: Path, label: str) -> None:
+        try:
+            if is_ecuflash_file(file):
+                loaded = self._ecuflash.add_file(file, label) is not None
             else:
-                self.bases[romid.xmlid] = definition
+                root = ET.parse(file).getroot()
+                added = [self._add_rom_el(el, source=label) for el in root.findall("rom")] if root.tag == "roms" else []
+                loaded = any(d is not None for d in added)
+        except ET.ParseError as exc:
+            log.warning("definitions: не разобран %s: %s", file, exc)
+            return
+        if loaded:
+            self.extra_files.append(file)
 
     def match(self, rom_bytes: bytes) -> list[RomDefinition]:
         """Найти child-definitions, подходящие под образ ROM."""
@@ -301,6 +361,50 @@ class EcuDefsRepository:
                 hits.append(child)
         return hits
 
+    def _match_ecuflash(self, rom_bytes: bytes) -> RomDefinition | None:
+        """Описание только из EcuFlash (в основном файле этой прошивки нет)."""
+        for rom in self._ecuflash.roms.values():
+            rid = rom.romid
+            if rid.xmlid in self._by_xmlid or rid.internalidaddress is None or not rid.internalidstring:
+                continue
+            start = rid.internalidaddress
+            found = bytes(rom_bytes[start : start + len(rid.internalidstring)])
+            if found.decode("ascii", errors="ignore") == rid.internalidstring:
+                return self._ecuflash_tables(rid.xmlid)
+        return None
+
+    def _ecuflash_tables(self, xmlid: str) -> RomDefinition | None:
+        """Описание из EcuFlash; у таблиц источник — имя файла."""
+        definition = self._ecuflash.definition(xmlid)
+        if definition is None:
+            return None
+        source = self._ecuflash.roms[xmlid].label
+        tables = {n: t.model_copy(update={"source": source}) for n, t in definition.tables.items()}
+        return definition.model_copy(update={"tables": tables})
+
+    def _with_extras(self, definition: RomDefinition) -> RomDefinition:
+        """Добавить таблицы дополнений к описанию: только новые имена и адреса."""
+        xmlid = definition.romid.xmlid
+        tables = dict(definition.tables)
+        addresses = {t.storageaddress for t in tables.values() if t.storageaddress is not None}
+        extras = list(self._overlays.get(xmlid, []))
+        # Описание из EcuFlash само основное, если прошивки нет в основном файле
+        ecuflash = self._ecuflash_tables(xmlid) if xmlid in self._by_xmlid else None
+        if ecuflash is not None:
+            extras.append(ecuflash)
+        for extra in extras:
+            for name, table in extra.tables.items():
+                existing = tables.get(name)
+                if existing is not None and existing.storageaddress is not None:
+                    continue
+                # Имя из базы без адреса в этой прошивке — дополнение даёт ей адрес
+                merged = _merge_table(existing, table) if existing is not None else table
+                if merged.storageaddress is None or merged.storageaddress in addresses:
+                    continue
+                tables[name] = merged
+                addresses.add(merged.storageaddress)
+        return definition.model_copy(update={"tables": tables})
+
     def resolve(self, child: RomDefinition) -> RomDefinition:
         """Смержить child с цепочкой base."""
         base_name = child.romid.base
@@ -316,6 +420,8 @@ class EcuDefsRepository:
 
     def lineage(self, xmlid: str) -> list[RomId]:
         """Цепочка romid от описания до корневой базы: [child, …, base]."""
+        if xmlid not in self._by_xmlid:
+            return self._ecuflash.lineage(xmlid)
         chain: list[RomId] = []
         seen: set[str] = set()
         current: str | None = xmlid
@@ -339,7 +445,8 @@ class EcuDefsRepository:
 
     def identify(self, rom_bytes: bytes) -> RomDefinition | None:
         hits = self.match(rom_bytes)
-        if not hits:
+        # При нескольких совпадениях — первое
+        definition = self.resolve(hits[0]) if hits else self._match_ecuflash(rom_bytes)
+        if definition is None:
             return None
-        # Prefer exact unique hit; if several, first
-        return with_defaults(self.resolve(hits[0]))
+        return with_defaults(self._with_extras(definition))

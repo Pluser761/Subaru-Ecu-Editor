@@ -111,6 +111,8 @@ def describe_table(table: CalibrationTable) -> dict[str, Any]:
         "formula": table.formula,
         "description": table.description,
         "storage": table.storage,
+        # Пусто — RomRaider ecu_defs.xml; иначе файл дополнения (свои находки, SubaruDefs: менее проверено)
+        "source": table.source or "ecu_defs.xml",
         "shape": f"{len(table.values)}x{len(table.values[0]) if table.values else 0}",
         "layout": "values[row][col]; row follows y_axis, col follows x_axis",
         "x_axis": _axis(table, "x"),
