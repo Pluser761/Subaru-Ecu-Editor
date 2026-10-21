@@ -1,0 +1,166 @@
+"""Протокол Subaru SSM: init (ID ЭБУ, байты возможностей) и чтение байт по адресам.
+
+Константы — как в RomRaider (io.protocol.ssm.iso9141 / iso15765):
+- K-line: пакет `80 <кому> <от кого> <длина> <команда> <данные…> <сумма>`, ЭБУ 0x10,
+  тестер 0xF0, сумма — младший байт суммы всех байт до неё; init `BF` → `FF`;
+- CAN: сообщение `<команда> <данные…>` на 0x7E0, ответ с 0x7E8; init `AA` → `EA`,
+  отказ ЭБУ — `7F <команда> <код>`;
+- чтение адресов одинаковое: `A8 00 <адрес:3>…` → `E8 <байт>…`, по байту на адрес.
+
+ID ЭБУ — байты 3–7 данных ответа на init (RomRaider SSMEcuInit); по нему logger def
+выбирает адреса extended-параметров. С байта 8 идут биты возможностей: параметр
+поддерживается, если в байте `ecubyteindex` стоит бит `ecubit`.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+from src.logger.core.transport.links import Link
+
+KLINE_HEADER = 0x80
+ECU_ADDRESS = 0x10
+TESTER_ADDRESS = 0xF0
+
+READ_ADDRESS = 0xA8
+READ_ADDRESS_RESPONSE = 0xE8
+KLINE_INIT = 0xBF
+KLINE_INIT_RESPONSE = 0xFF
+CAN_INIT = 0xAA
+CAN_INIT_RESPONSE = 0xEA
+NEGATIVE_RESPONSE = 0x7F
+
+# Длина пакета K-line — один байт: команда + заполнитель + 3 байта на адрес ≤ 255
+KLINE_MAX_ADDRESSES = 84
+CAN_MAX_ADDRESSES = 84
+DEFAULT_TIMEOUT = 0.5
+
+
+class SsmError(Exception):
+    """Нет ответа, битый ответ или отказ ЭБУ (`code` — код отказа на CAN)."""
+
+    def __init__(self, message: str, code: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class EcuInit:
+    data: bytes  # данные ответа на init без кода ответа
+
+    @property
+    def ecu_id(self) -> str:
+        """«5C42584007» — как в logger def RomRaider и в romid ecu_defs.xml."""
+        return self.data[3:8].hex().upper()
+
+    def supports(self, byte_index: int | None, bit: int | None) -> bool:
+        """Поддерживается ли параметр по битам возможностей; без индекса — да."""
+        if byte_index is None or bit is None:
+            return True
+        return byte_index < len(self.data) and bool(self.data[byte_index] & (1 << bit))
+
+
+def checksum(data: bytes) -> int:
+    return sum(data) & 0xFF
+
+
+def kline_packet(command: int, data: bytes = b"", dest: int = ECU_ADDRESS, src: int = TESTER_ADDRESS) -> bytes:
+    body = bytes([KLINE_HEADER, dest, src, len(data) + 1, command]) + data
+    return body + bytes([checksum(body)])
+
+
+def split_kline(buffer: bytes) -> tuple[bytes | None, bytes]:
+    """Выделить первый целый пакет K-line: (пакет или None, остаток). Мусор до заголовка
+    отбрасывается; пакет с неверной суммой — SsmError."""
+    start = buffer.find(bytes([KLINE_HEADER]))
+    if start < 0:
+        return None, b""
+    buffer = buffer[start:]
+    if len(buffer) < 4:
+        return None, buffer
+    size = 4 + buffer[3] + 1
+    if len(buffer) < size:
+        return None, buffer
+    packet, rest = buffer[:size], buffer[size:]
+    if checksum(packet[:-1]) != packet[-1]:
+        raise SsmError(f"SSM: bad checksum in {packet.hex(' ')}")
+    return packet, rest
+
+
+def address_bytes(addresses: Sequence[int]) -> bytes:
+    return b"".join(a.to_bytes(3, "big") for a in addresses)
+
+
+class SsmClient:
+    """SSM поверх одного канала. Не потокобезопасен."""
+
+    def __init__(self, link: Link, timeout: float = DEFAULT_TIMEOUT) -> None:
+        self.link = link
+        self.timeout = timeout
+        self.max_addresses = CAN_MAX_ADDRESSES if link.name == "can" else KLINE_MAX_ADDRESSES
+
+    @property
+    def transport(self) -> str:
+        return self.link.name
+
+    def init(self) -> EcuInit:
+        if self.link.name == "can":
+            data = self._request_can(bytes([CAN_INIT]), CAN_INIT_RESPONSE)
+        else:
+            data = self._request_kline(KLINE_INIT, b"", KLINE_INIT_RESPONSE)
+        if len(data) < 8:
+            raise SsmError(f"SSM: init response too short: {data.hex(' ')}")
+        return EcuInit(data)
+
+    def read_addresses(self, addresses: Sequence[int]) -> bytes:
+        """По байту на каждый адрес; длинные списки делятся на несколько запросов."""
+        out = bytearray()
+        for i in range(0, len(addresses), self.max_addresses):
+            chunk = addresses[i : i + self.max_addresses]
+            payload = b"\x00" + address_bytes(chunk)
+            if self.link.name == "can":
+                data = self._request_can(bytes([READ_ADDRESS]) + payload, READ_ADDRESS_RESPONSE)
+            else:
+                data = self._request_kline(READ_ADDRESS, payload, READ_ADDRESS_RESPONSE)
+            if len(data) != len(chunk):
+                raise SsmError(f"SSM: asked {len(chunk)} addresses, got {len(data)} bytes")
+            out += data
+        return bytes(out)
+
+    # --- Обмен ---
+
+    def _request_can(self, message: bytes, expected: int) -> bytes:
+        self.link.flush()
+        self.link.send(message)
+        deadline = time.monotonic() + self.timeout
+        while True:
+            reply = self.link.receive(max(deadline - time.monotonic(), 0))
+            if reply is None:
+                raise SsmError(f"SSM/CAN: no response to {message[:1].hex()}")
+            if reply[:1] == bytes([NEGATIVE_RESPONSE]) and len(reply) >= 3 and reply[1] == message[0]:
+                raise SsmError(f"SSM/CAN: ECU rejected {message[0]:02x}, code {reply[2]:02x}", reply[2])
+            if reply[:1] == bytes([expected]):
+                return reply[1:]
+
+    def _request_kline(self, command: int, data: bytes, expected: int) -> bytes:
+        request = kline_packet(command, data)
+        self.link.flush()
+        self.link.send(request)
+        deadline = time.monotonic() + self.timeout
+        buffer = b""
+        while True:
+            chunk = self.link.receive(max(deadline - time.monotonic(), 0))
+            if chunk is None:
+                raise SsmError(f"SSM/K-line: no response to {command:02x}")
+            buffer += chunk
+            while True:
+                packet, buffer = split_kline(buffer)
+                if packet is None:
+                    break
+                # Эхо своей передачи (K-line однопроводная, LOOPBACK=1) — пропустить
+                if packet == request:
+                    continue
+                if packet[1] == TESTER_ADDRESS and packet[4] == expected:
+                    return packet[5:-1]
