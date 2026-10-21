@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PyQt6.QtCore import QLocale, QSettings, QSize
 from PyQt6.QtGui import QKeySequence
 
@@ -41,6 +43,16 @@ class AppSettings:
     @property
     def file_name(self) -> str:
         return self._settings.fileName()
+
+    @property
+    def notes_dir(self) -> Path:
+        """Заметки о прошивках (контекст для ИИ) — папка `notes` рядом с settings.ini."""
+        return Path(self.file_name).parent / "notes"
+
+    @property
+    def definitions_dir(self) -> Path:
+        """Свои дополнения definitions (например, SubaruDefs) — папка `definitions` рядом с settings.ini."""
+        return Path(self.file_name).parent / "definitions"
 
     # --- Клавиши ---
 
