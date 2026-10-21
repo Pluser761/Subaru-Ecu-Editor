@@ -171,3 +171,19 @@ def test_mcp_propose_edit_respects_user_answer(served, session: RomSession):
     result = _call(served(accepted), "propose_map_edit", args)
     assert result["applied"] is True and accepted.applied_maps == ["Target Boost "]
     assert session.load_table("Target Boost ").values[0][0] == pytest.approx(before + 1, abs=0.1)
+
+
+def test_mcp_notes_round_trip(session: RomSession, tmp_path):
+    from src.ai.notes import NotesStore
+
+    server = ServerThread(FakeHost(session, accept=False), _free_port(), NotesStore(tmp_path))
+    server.start()
+    try:
+        assert _call(server.url, "rom_info", {})["notes"] == "(no notes yet)"
+        assert "98 octane" in _call(server.url, "add_note", {"text": "98 octane"})["notes"]
+        assert "98 octane" in _call(server.url, "rom_info", {})["notes"]
+        assert _call(server.url, "replace_notes", {"text": "E85"})["notes"] == "E85\n"
+        notes = _call(server.url, "read_notes", {})
+        assert notes["rom_id"] == "AZ1G301F" and notes["notes"] == "E85\n"
+    finally:
+        server.stop()

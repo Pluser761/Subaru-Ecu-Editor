@@ -18,6 +18,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from src.ai import logs, tools
+from src.ai.notes import NoteKey, NotesStore
 from src.ai.tools import EditProposal, ToolError
 from src.core.parser import EcuParser
 from src.core.session import RomSession
@@ -39,6 +40,12 @@ You are connected to a desktop editor of Subaru ECU ROM calibration maps (RomRai
 - Axes shared by several tables change all of them; check shared_with before editing an axis.
 - Logs: RomRaider/Car Scanner CSV files; use log_summary first, then log_rows or log_to_map.
 - Be conservative with ignition timing and boost; explain your reasoning in `reason`.
+- Notes: every ROM has persistent notes kept on the user's computer (car setup, fuel, mods,
+  goals, what was changed and why, findings from logs). rom_info returns them — read them
+  before working, they are the context from earlier conversations. Record durable facts and
+  decisions with add_note (short entries, dated automatically); don't copy map values that
+  can be read from the ROM. Use replace_notes only to condense or fix outdated notes.
+  The user can view and edit them too (AI → ROM Notes).
 """
 
 
@@ -67,7 +74,15 @@ def _require_rom(session: RomSession) -> None:
         raise ToolError("No ROM is open in the editor. Ask the user to open one (File → Open ROM).")
 
 
-def build_server(host: EditorHost) -> MCPServer:
+def _note_key(session: RomSession) -> NoteKey:
+    _require_rom(session)
+    key = NoteKey.for_rom(session.parser.file_path, session.parser.xmlid)
+    if key is None:
+        raise ToolError("The open ROM has no file name or ROM id; notes are unavailable.")
+    return key
+
+
+def build_server(host: EditorHost, notes: NotesStore | None = None) -> MCPServer:
     server: MCPServer = MCPServer(
         "subaru-ecu-editor", version=version(), instructions=INSTRUCTIONS, log_level="WARNING"
     )
@@ -83,8 +98,52 @@ def build_server(host: EditorHost) -> MCPServer:
 
     @server.tool(annotations=read_only)
     def rom_info() -> dict[str, Any]:
-        """The ROM open in the editor: file, ECU, car, unsaved changes, maps changed since checkpoint."""
-        return host.call(tools.rom_info)
+        """The ROM open in the editor: file, ECU, car, unsaved changes, maps changed since checkpoint,
+        and the persistent notes about this ROM (context from earlier conversations)."""
+
+        def run(session: RomSession) -> dict[str, Any]:
+            info = tools.rom_info(session)
+            if info.get("open") and notes is not None:
+                key = NoteKey.for_rom(session.parser.file_path, session.parser.xmlid)
+                info["notes"] = (notes.read(key) if key else "") or "(no notes yet)"
+            return info
+
+        return host.call(run)
+
+    def store() -> NotesStore:
+        if notes is None:
+            raise ToolError("Notes are not available in this editor session.")
+        return notes
+
+    @server.tool(annotations=read_only)
+    def read_notes() -> dict[str, Any]:
+        """Persistent notes about the open ROM (Markdown): car, fuel, mods, goals, past changes and why."""
+
+        def run(session: RomSession) -> dict[str, Any]:
+            key = _note_key(session)
+            return {"file": key.file_name, "rom_id": key.xmlid, "notes": store().read(key)}
+
+        return host.call(run)
+
+    @server.tool(annotations=ToolAnnotations(destructive_hint=False, idempotent_hint=False))
+    def add_note(text: str) -> dict[str, Any]:
+        """Append a dated entry to the notes of the open ROM (Markdown, keep it short):
+        a durable fact about the car or a decision/change and its reason. Returns the notes."""
+        if not text.strip():
+            raise ToolError("Empty note")
+        return host.call(lambda s: {"notes": store().append(_note_key(s), text)})
+
+    @server.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=True))
+    def replace_notes(text: str) -> dict[str, Any]:
+        """Replace the whole notes of the open ROM (to condense them or drop outdated facts).
+        Keep everything still relevant: the old text is not kept anywhere. Empty text deletes the notes."""
+
+        def run(session: RomSession) -> dict[str, Any]:
+            key = _note_key(session)
+            store().write(key, text)
+            return {"notes": store().read(key)}
+
+        return host.call(run)
 
     @server.tool(annotations=read_only)
     def list_maps(category: str | None = None, query: str | None = None) -> list[dict[str, Any]]:
@@ -221,9 +280,9 @@ def build_server(host: EditorHost) -> MCPServer:
 class ServerThread:
     """HTTP-сервер MCP в фоновом потоке (uvicorn со своим event loop)."""
 
-    def __init__(self, host: EditorHost, port: int = DEFAULT_PORT) -> None:
+    def __init__(self, host: EditorHost, port: int = DEFAULT_PORT, notes: NotesStore | None = None) -> None:
         self.port = port
-        app = build_server(host).streamable_http_app(streamable_http_path=PATH, host="127.0.0.1")
+        app = build_server(host, notes).streamable_http_app(streamable_http_path=PATH, host="127.0.0.1")
         # Короткое завершение: открытые сессии клиентов не держат закрытие программы
         config = uvicorn.Config(
             app, host="127.0.0.1", port=port, log_level="warning", lifespan="on", timeout_graceful_shutdown=1
