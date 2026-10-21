@@ -40,6 +40,35 @@ def test_set_checkpoint_clears_change(session: RomSession):
     assert session.refresh_changed({BOOST}) == set()
 
 
+def test_revert_restores_rom_bytes(session: RomSession):
+    original = bytes(session.parser.rom_bytes)
+    session.checkpoint(BOOST)
+    session.write_cell(BOOST, 0, 5, 1.5)
+    session.write_cell(BOOST, 2, 3, 0.3)
+    session.write_axis(IDLE_A, "y", 4, 40.0)
+    touched = session.revert()
+    # Откат оси затрагивает и соседей по ней
+    assert {BOOST, IDLE_A, "Idle Speed Target B", IDLE_C} <= touched
+    assert bytes(session.parser.rom_bytes) == original
+    assert session.refresh_changed(touched) == set()
+
+
+def test_revert_one_map_keeps_others(session: RomSession):
+    session.write_cell(BOOST, 0, 5, 1.5)
+    session.write_cell(IDLE_A, 0, 0, 1500.0)
+    assert session.revert({BOOST}) == {BOOST}
+    assert session.refresh_changed({BOOST, IDLE_A}) == {IDLE_A}
+
+
+def test_revert_to_user_checkpoint(session: RomSession):
+    session.write_cell(BOOST, 1, 1, 5.0)
+    session.set_checkpoint(BOOST)
+    kept = session.load_table(BOOST).values
+    session.write_cell(BOOST, 1, 1, 8.0)
+    session.revert({BOOST})
+    assert session.load_table(BOOST).values == kept
+
+
 def test_transfer_keeps_user_checkpoint(repo, session: RomSession):
     # Своя точка отсчёта пользователя (после правки) не затирается состоянием «до переноса»
     session.write_cell(BOOST, 0, 0, 3.0)

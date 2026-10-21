@@ -11,11 +11,14 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 from src.i18n import tr
 from src.core import checksum
-from src.core.checkpoint import table_differs
+from src.core.checkpoint import same_values, table_differs
 from src.core.models import CalibrationTable, Checkpoint
 from src.core.parser import EcuParser
+from src.core.rom_io import is_writable_axis, write_axis_values, write_table_values
 from src.core.transfer import TransferPlan, TransferReport, apply_transfer
 
 
@@ -98,6 +101,10 @@ class RomSession:
                 self._changed.discard(map_id)
         return self.changed
 
+    def find_changed(self) -> set[str]:
+        """Перепроверить все карты, у которых есть checkpoint; вернуть изменённые."""
+        return self.refresh_changed(set(self._checkpoints))
+
     # --- Сценарии записи ---
 
     def write_cell(self, map_id: str, row: int, col: int, value: float) -> float:
@@ -121,6 +128,37 @@ class RomSession:
         """Включить/выключить переключатель (ошибку DTC и т.п.)."""
         self.parser.write_switch(switch_id, state)
         self.dirty = True
+
+    def revert(self, map_ids: set[str] | None = None) -> set[str]:
+        """Откатить карты к их checkpoint (по умолчанию — все изменённые): значения и
+        редактируемые оси. Вернуть карты, чьи данные в ROM могли поменяться, включая соседей
+        по общей оси (откат оси меняет и их; их checkpoint снимается до записи)."""
+        targets = self.find_changed() if map_ids is None else set(map_ids)
+        touched: set[str] = set()
+        for map_id in sorted(targets):
+            checkpoint = self._checkpoints.get(map_id)
+            if checkpoint is None:
+                continue  # карту не трогали — откатывать не к чему
+            table = self.parser.get_table_def(map_id)
+            current = self.load_table(map_id)
+            for axis, axis_def, base, now in (
+                ("x", table.x_axis, checkpoint.x_axis, current.x_axis),
+                ("y", table.y_axis, checkpoint.y_axis, current.y_axis),
+            ):
+                if not is_writable_axis(axis_def) or len(base) != len(now) or same_values(base, now):
+                    continue
+                shared = self.parser.shared_axis_users(map_id, axis)
+                for name, _ in shared:
+                    self.checkpoint(name)
+                    touched.add(name)
+                write_axis_values(self.parser.rom_bytes, axis_def, np.array(base, dtype=float))
+            if len(checkpoint.values) == len(current.values):
+                # Значения checkpoint прочитаны из ROM — ближайшее представимое и есть исходный байт
+                write_table_values(self.parser.rom_bytes, table, np.array(checkpoint.values, dtype=float))
+            touched.add(map_id)
+        if touched:
+            self.dirty = True
+        return touched
 
     def transfer(self, donor: EcuParser, names: list[str], plan: TransferPlan) -> TransferReport:
         """Перенос карт из донора. Checkpoint перенесённых — состояние до переноса, если у карты
