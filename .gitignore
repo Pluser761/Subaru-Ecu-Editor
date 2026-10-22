@@ -29,3 +29,4 @@ tmp
 
 # Локальные инструменты реверса прошивок (не коммитим)
 tools
+/definitions/logger/profiles/
