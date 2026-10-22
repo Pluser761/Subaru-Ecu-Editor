@@ -2,8 +2,9 @@
 
 Протокол выбирается сам: сначала SSM по CAN (быстро), если ЭБУ по CAN молчит — SSM по
 K-line. Если по CAN ЭБУ отказывает на части адресов, они находятся делением запроса
-пополам и переезжают на K-line (открывается при первой нужде), остальное остаётся на CAN;
-такие параметры — в `slow`: они тормозят весь опрос, интерфейс об этом предупреждает.
+пополам и переезжают на K-line (открывается при первой нужде), остальное остаётся на CAN. K-line опрашивается
+без ожидания между опросами CAN: CAN идёт на своей скорости (~50 опросов/с на машине),
+параметры K-line обновляются реже (~5–8 раз/с) и показывают последнее значение — они в `slow`.
 """
 
 from __future__ import annotations
@@ -88,6 +89,10 @@ class Poller:
         self.slow: set[str] = set()  # читаются через запасной K-line
         self._bad_addresses: set[int] = set()  # отказ на основном канале
         self._fallback: SsmClient | None = None
+        # K-line рядом с CAN: последние значения, адреса текущего запроса, чей черёд
+        self._fallback_values: dict[int, int] = {}
+        self._fallback_chunk: list[int] = []
+        self._fallback_turn = -1
         self._plan = _Plan([], [], [])
         self._start = time.monotonic()
         self._mark = 0
@@ -166,14 +171,17 @@ class Poller:
     # --- Чтение ---
 
     def _read(self, addresses: list[int]) -> dict[int, int | None]:
-        """Байты по адресам: основной канал, отказавшие адреса — через K-line."""
+        """Байты по адресам: основной канал — каждый опрос; отказавшие на нём адреса — через
+        K-line без ожидания (последнее полученное значение, пока не пришло новое)."""
         good = [a for a in addresses if a not in self._bad_addresses]
-        bad = [a for a in addresses if a in self._bad_addresses]
         out: dict[int, int | None] = {}
+        self._service_fallback(addresses)
         if good:
             out.update(self._read_isolating(self.connection.client, good))
-        if bad:
-            out.update(self._read_fallback(bad))
+        self._service_fallback(addresses)
+        for address in addresses:
+            if address in self._bad_addresses:
+                out[address] = self._fallback_values.get(address)
         self._update_status()
         return out
 
@@ -187,25 +195,44 @@ class Poller:
                 raise  # нет ответа / битый ответ — не отказ по адресу
             if len(addresses) == 1:
                 self._bad_addresses.add(addresses[0])
-                return self._read_fallback(addresses)
+                return {addresses[0]: self._fallback_values.get(addresses[0])}
             half = len(addresses) // 2
             out = self._read_isolating(client, addresses[:half])
             out.update(self._read_isolating(client, addresses[half:]))
             return out
 
-    def _read_fallback(self, addresses: list[int]) -> dict[int, int | None]:
+    def _service_fallback(self, addresses: list[int]) -> None:
+        """K-line рядом с CAN: забрать готовый ответ и сразу отправить следующий запрос
+        (адреса по кругу кусками), не дожидаясь ответа."""
+        bad = [a for a in addresses if a in self._bad_addresses]
+        if not bad:
+            return
+        fallback = self._open_fallback()
+        if fallback is None:
+            return
+        if fallback.pending:
+            try:
+                data = fallback.poll_read()
+            except SsmError:
+                data = None
+                self._fallback_chunk = []  # не дождались — запросить заново
+            if data is not None:
+                self._fallback_values.update(zip(self._fallback_chunk, data))
+                self._fallback_chunk = []
+            if fallback.pending:
+                return
+        chunks = [bad[i : i + fallback.max_addresses] for i in range(0, len(bad), fallback.max_addresses)]
+        self._fallback_turn = (self._fallback_turn + 1) % len(chunks)
+        self._fallback_chunk = chunks[self._fallback_turn]
+        fallback.begin_read(self._fallback_chunk)
+
+    def _open_fallback(self) -> SsmClient | None:
         if self._fallback is None and self.connection.open_fallback is not None:
             try:
                 self._fallback = self.connection.open_fallback()
             except (SsmError, OpenPortError):
                 self.connection.open_fallback = None  # K-line тоже не отвечает — больше не пробуем
-        if self._fallback is None:
-            return {a: None for a in addresses}
-        try:
-            data = self._fallback.read_addresses(addresses)
-        except SsmError:
-            return {a: None for a in addresses}
-        return dict(zip(addresses, data))
+        return self._fallback
 
     def _update_status(self) -> None:
         self.slow.clear()

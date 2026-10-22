@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Protocol
 
 from src.logger.core.transport import op2
@@ -25,7 +26,7 @@ class Link(Protocol):
 
     name: str  # «can» / «kline»
 
-    def send(self, payload: bytes) -> None: ...
+    def send(self, payload: bytes, wait: bool = True) -> None: ...
 
     def receive(self, timeout: float) -> bytes | None: ...
 
@@ -62,8 +63,8 @@ class CanLink:
             p, op2.FLOW_CONTROL_FILTER, op2.ISO15765_FRAME_PAD, b"\xff\xff\xff\xff", self._rx_id, self._tx_id
         )
 
-    def send(self, payload: bytes) -> None:
-        self._dev.transmit(op2.ISO15765, self._tx_id + payload, op2.ISO15765_FRAME_PAD)
+    def send(self, payload: bytes, wait: bool = True) -> None:
+        self._dev.transmit(op2.ISO15765, self._tx_id + payload, op2.ISO15765_FRAME_PAD, wait=wait)
 
     def receive(self, timeout: float) -> bytes | None:
         """Следующее полное сообщение от ЭБУ (без CAN ID); эхо и «первый кадр» пропускаются."""
@@ -101,14 +102,19 @@ class KLineLink:
             device.set_config(p, param, value)
         device.add_filter(p, op2.PASS_FILTER, 0, b"\x00", b"\x00")
 
-    def send(self, payload: bytes) -> None:
-        self._dev.transmit(op2.ISO9141, payload)
+    def send(self, payload: bytes, wait: bool = True) -> None:
+        self._dev.transmit(op2.ISO9141, payload, wait=wait)
 
     def receive(self, timeout: float) -> bytes | None:
-        # Формат записей K-line у адаптера на железе не проверен: считаем, что данные идут
-        # сразу после status и timestamp, без ID. Пакеты SSM собирает уровень выше.
-        frame = self._dev.receive(op2.ISO9141, timeout)
-        return None if frame is None else frame.data
+        """Следующий кусок принятых байт (пакеты SSM собирает уровень выше). Эхо своей
+        передачи и служебные записи без данных пропускаются."""
+        deadline = time.monotonic() + timeout
+        while True:
+            frame = self._dev.receive(op2.ISO9141, max(deadline - time.monotonic(), 0))
+            if frame is None:
+                return None
+            if frame.status == op2.KLINE_DATA and frame.data:
+                return frame.data
 
     def flush(self) -> None:
         self._dev.drain(op2.ISO9141)

@@ -22,6 +22,7 @@ from src.ai.notes import NoteKey, NotesStore
 from src.ai.tools import EditProposal, ToolError
 from src.core.parser import EcuParser
 from src.core.session import RomSession
+from src.logger.core.paths import rom_log_dir
 from src.version import version
 
 T = TypeVar("T")
@@ -222,7 +223,8 @@ def build_server(host: EditorHost, notes: NotesStore | None = None) -> MCPServer
 
     @server.tool(annotations=read_only)
     def list_logs(directory: str | None = None) -> list[dict[str, Any]]:
-        """CSV logs in a folder (default: `logs` next to the open ROM, recursively)."""
+        """CSV logs in a folder (default: the open ROM's logger folder
+        `ecu-editor-logs/<rom name>` next to the ROM, recursively)."""
 
         def folder(session: RomSession) -> Path:
             if directory:
@@ -230,7 +232,7 @@ def build_server(host: EditorHost, notes: NotesStore | None = None) -> MCPServer
             base = session.parser.file_path
             if not base:
                 raise ToolError("No ROM is open; pass a directory")
-            return Path(base).parent / "logs"
+            return rom_log_dir(base)
 
         return logs.list_logs(host.call(folder))
 

@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from src.logger.core.profile import ProfileItem, load_profile, save_profile
-from src.logger.presenter import EMULATOR_PORT, LoggerPresenter, RomInfo
+from src.logger.core.profile import ProfileItem, list_profiles, load_profile, save_profile
+from src.logger.presenter import EMULATOR_PORT, LOGGER_PROFILES, LoggerPresenter, RomInfo
 from src.logger.ui.window import LoggerWindow
 
 
@@ -24,6 +24,10 @@ class FakeSettings:
     @property
     def logger_trace_dir(self) -> Path:
         return self.root / "traces"
+
+    @property
+    def logger_profiles_dir(self) -> Path:
+        return self.root / "profiles"
 
     def logger_log_dir(self) -> str | None:
         return self.log_dir
@@ -77,12 +81,14 @@ def test_live_values_record_and_mark(logger: LoggerPresenter, tmp_path: Path) ->
     assert runner is not None and [pid for pid, _u in runner.poller.selection] == ["P8", "E9002"]
     runner.step()
     logger._refresh()
-    assert window._table.rowCount() == 2
-    rpm = window._table.item(0, 2)
-    assert rpm is not None and rpm.text() not in ("", "—")
+    # Всё выбранное — и плиткой на дашборде, и графиком
+    assert set(window._graphs) == {"P8", "E9002"}
+    rpm = window.dashboard.tile("P8")
+    assert rpm is not None and rpm._value.text() not in ("", "—") and rpm._unit.text() == "rpm"
     window._record_btn.setChecked(True)  # → record_toggled
     path = runner.recording
-    assert path is not None and path.parent == tmp_path / "logs" and path.name.startswith("gd-maf-v4_")
+    assert path is not None and path.parent == tmp_path / "ecu-editor-logs" / "gd-maf-v4"
+    assert path.stem.replace("_", "").isdigit()  # 20261021_170500.csv
     logger.mark()
     runner.step()
     runner.step()
@@ -102,7 +108,7 @@ def test_profile_round_trip(logger: LoggerPresenter, tmp_path: Path) -> None:
         ("P8", "rpm", True), ("P2", "F", False), ("P999", None, False), ("S23", None, False)]  # сначала параметры
     logger.apply_profile(items)
     assert logger.window.selected() == [("P2", "F"), ("P8", "rpm"), ("S23", "on/off")]
-    assert logger.window.graphed() == ["P8"]
+    assert logger.window.dashboard.tile("S23") is not None
     assert "1" in logger.window._status.text()  # P999 нет в описаниях — не подошёл
 
 
@@ -125,3 +131,25 @@ def test_failed_connect_reports_error(qapp, tmp_path: Path) -> None:  # type: ig
                                 open_port=broken)
     presenter.connect("/dev/x")
     assert presenter.runner is None and "port busy" in presenter.window._status.text()
+
+
+def test_bundled_profiles_are_valid(logger: LoggerPresenter) -> None:
+    entries = list_profiles([(LOGGER_PROFILES, "extra")])
+    assert "Переключения и хлопки" in [e.name for e in entries]
+    for entry in entries:
+        items = load_profile(entry.path)
+        assert items and all(item.id in logger.defs.params for item in items), entry.name
+
+
+def test_quick_pick_filters_and_applies(logger: LoggerPresenter, tmp_path: Path) -> None:
+    own = tmp_path / "profiles"
+    own.mkdir()
+    save_profile(own / "Мой круиз.xml", [ProfileItem("P8", "rpm"), ProfileItem("P12", "g/s")])
+    logger.pick_profile()
+    picker = logger.window._picker
+    assert "Мой круиз" in picker.visible_names() and "Переключения и хлопки" in picker.visible_names()
+    picker._search.setText("мой")
+    assert picker.visible_names() == ["Мой круиз"]
+    picker.choose_current()  # как Enter
+    assert not picker.isVisible()
+    assert logger.window.selected() == [("P8", "rpm"), ("P12", "g/s")]

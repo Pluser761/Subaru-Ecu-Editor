@@ -57,3 +57,23 @@ def save_profile(path: str | Path, items: Sequence[ProfileItem]) -> None:
 
 def _escape(text: str) -> str:
     return text.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+
+
+@dataclass(frozen=True)
+class ProfileEntry:
+    """Профиль в списке быстрого выбора: имя — имя файла без .xml."""
+
+    name: str
+    path: Path
+    source: str  # «extra» — из сборки, «user» — своя папка
+
+
+def list_profiles(folders: Sequence[tuple[str | Path, str]]) -> list[ProfileEntry]:
+    """Профили из папок [(папка, подпись)] по алфавиту внутри каждой; несуществующие — пропуск."""
+    entries: list[ProfileEntry] = []
+    for folder, source in folders:
+        root = Path(folder)
+        if root.is_dir():
+            files = sorted(root.glob("*.xml"), key=lambda p: p.stem.lower())
+            entries += [ProfileEntry(path.stem, path, source) for path in files]
+    return entries

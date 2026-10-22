@@ -17,9 +17,13 @@ from pathlib import Path
 from src.logger.core.csv_log import CsvLogWriter
 from src.logger.core.params import decimals
 from src.logger.core.session import Poller, Sample
+from src.logger.core.ssm import SsmError
 
 # Пауза между опросами, если запрос вернулся мгновенно (эмулятор): не крутить процессор
 MIN_PERIOD = 0.01
+# Пропуски ответа ЭБУ подряд, после которых связь считается потерянной (одиночный пропуск
+# бывает — например, в момент выключения зажигания или помехи)
+MAX_MISSES = 3
 
 
 class LoggerRunner:
@@ -104,6 +108,7 @@ class LoggerRunner:
 
     def _loop(self) -> None:
         last: float | None = None
+        misses = 0
         while self._running.is_set():
             started = time.monotonic()
             if last is not None:
@@ -112,6 +117,15 @@ class LoggerRunner:
             last = started
             try:
                 self.step()
+                misses = 0
+            except SsmError as exc:
+                misses += 1
+                if exc.code is None and misses < MAX_MISSES:
+                    continue  # одиночный пропуск ответа — повторить опрос
+                self._running.clear()
+                self.stop_recording()
+                self._on_error(exc)
+                return
             except Exception as exc:  # noqa: BLE001 — связь оборвалась: остановиться и сообщить
                 self._running.clear()
                 self.stop_recording()

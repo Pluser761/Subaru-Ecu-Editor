@@ -1,4 +1,5 @@
-"""Окно логгера: подключение, выбор параметров, живые значения, графики, запись и отметки.
+"""Окно логгера: подключение, выбор параметров, запись и отметки; справа — вкладки
+«Дашборд» (плитка на каждый выбранный параметр) и «График» (график на каждый выбранный).
 
 Только виджеты и сигналы — логика в src/logger/presenter.py. Отдельное окно ОС.
 """
@@ -10,7 +11,7 @@ from dataclasses import dataclass, field
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QPoint, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QColor, QKeySequence, QShortcut
+from PyQt6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -21,9 +22,9 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -31,17 +32,19 @@ from PyQt6.QtWidgets import (
 )
 
 from src.i18n import tr
+from src.logger.ui.dashboard import Dashboard
+from src.logger.ui.profile_picker import ProfilePicker
 
 DEFAULT_SIZE = (1100, 720)
 GRAPH_SECONDS = 30.0
-MAX_GRAPHS = 6
+PLOT_HEIGHT = 130  # высота одного графика: больше графиков — вкладка прокручивается
 _ROLE_ID = int(Qt.ItemDataRole.UserRole)
-SLOW_COLOR = QColor("#b36b00")
-UNSUPPORTED_COLOR = QColor("#999999")
 MARK_COLOR = "#d03030"
 # Цвета графиков: тёмные, различимые на белом
 GRAPH_COLORS = ("#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#17becf")
 UNITS_COLUMN_WIDTH = 72
+# Ctrl на macOS Qt сам показывает и понимает как ⌘
+_PICK_KEY = QKeySequence("Ctrl+P")
 
 
 @dataclass
@@ -62,7 +65,6 @@ class LiveRow:
     id: str
     name: str
     unit: str
-    graph: bool = False
 
 
 @dataclass
@@ -78,9 +80,10 @@ class LoggerWindow(QWidget):
     disconnect_requested = pyqtSignal()
     refresh_ports_requested = pyqtSignal()
     selection_changed = pyqtSignal()
-    graphs_changed = pyqtSignal()
     record_toggled = pyqtSignal(bool)
     mark_requested = pyqtSignal()
+    pick_profile_requested = pyqtSignal()  # быстрый выбор (Cmd/Ctrl+P)
+    profile_chosen = pyqtSignal(str)  # путь выбранного в быстром выборе
     open_profile_requested = pyqtSignal()
     save_profile_requested = pyqtSignal()
     choose_folder_requested = pyqtSignal()
@@ -159,11 +162,20 @@ class LoggerWindow(QWidget):
         tree_header.resizeSection(1, UNITS_COLUMN_WIDTH)
         self._tree.itemChanged.connect(self._on_item_changed)
         self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
-        profile_open = QPushButton(tr("Открыть профиль…"))
+        self._profile_btn = QPushButton(tr("Профили ▾"))
+        self._profile_btn.setToolTip(tr("Быстрый выбор профиля ({key})", key=_PICK_KEY.toString(
+            QKeySequence.SequenceFormat.NativeText)))
+        self._profile_btn.clicked.connect(self.pick_profile_requested)
+        QShortcut(_PICK_KEY, self, self.pick_profile_requested.emit)
+        self._picker = ProfilePicker(self)
+        self._picker.picked.connect(self.profile_chosen)
+        profile_open = QPushButton(tr("Открыть файл…"))
+        profile_open.setToolTip(tr("Открыть профиль RomRaider из любой папки"))
         profile_open.clicked.connect(self.open_profile_requested)
         profile_save = QPushButton(tr("Сохранить профиль…"))
         profile_save.clicked.connect(self.save_profile_requested)
         profile_row = QHBoxLayout()
+        profile_row.addWidget(self._profile_btn, 1)
         profile_row.addWidget(profile_open)
         profile_row.addWidget(profile_save)
         left = QWidget()
@@ -177,25 +189,17 @@ class LoggerWindow(QWidget):
         hint.setWordWrap(True)
         left_layout.addWidget(hint)
 
-        # --- Справа: живые значения и графики ---
-        self._table = QTableWidget(0, 6)
-        self._table.setHorizontalHeaderLabels([tr("График"), tr("Параметр"), tr("Значение"), tr("Ед."), tr("Мин"), tr("Макс")])
-        header = self._table.horizontalHeader()
-        assert header is not None
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for col in (0, 2, 3, 4, 5):
-            header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
-        vheader = self._table.verticalHeader()
-        assert vheader is not None
-        vheader.setVisible(False)
-        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.itemChanged.connect(self._on_graph_check)
+        # --- Справа: вкладки «Дашборд» и «График» — оба показывают всё, что отмечено слева ---
+        self.dashboard = Dashboard()
         self._plots = pg.GraphicsLayoutWidget()
         self._plots.setBackground("w")
-        right = QSplitter(Qt.Orientation.Vertical)
-        right.addWidget(self._table)
-        right.addWidget(self._plots)
-        right.setSizes([260, 420])
+        plots_scroll = QScrollArea()
+        plots_scroll.setWidgetResizable(True)
+        plots_scroll.setWidget(self._plots)
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self.dashboard, tr("Дашборд"))
+        self._tabs.addTab(plots_scroll, tr("График"))
+        right = self._tabs
 
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(left)
@@ -365,59 +369,27 @@ class LoggerWindow(QWidget):
     # --- Живые значения ---
 
     def set_live_rows(self, rows: list[LiveRow]) -> None:
-        self._table.blockSignals(True)
-        self._table.setRowCount(len(rows))
+        """Выбранные параметры: плитки на дашборде и графики (прежние данные графиков теряются)."""
         self._live_ids = [row.id for row in rows]
-        for r, row in enumerate(rows):
-            check = QTableWidgetItem()
-            check.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-            check.setCheckState(Qt.CheckState.Checked if row.graph else Qt.CheckState.Unchecked)
-            self._table.setItem(r, 0, check)
-            self._table.setItem(r, 1, QTableWidgetItem(row.name))
-            for col, text in ((2, ""), (3, row.unit), (4, ""), (5, "")):
-                cell = QTableWidgetItem(text)
-                if col in (2, 4, 5):
-                    cell.setTextAlignment(int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
-                self._table.setItem(r, col, cell)
-        self._table.blockSignals(False)
-
-    def graphed(self) -> list[str]:
-        out = []
-        for r, pid in enumerate(self._live_ids):
-            item = self._table.item(r, 0)
-            if item is not None and item.checkState() == Qt.CheckState.Checked:
-                out.append(pid)
-        return out[:MAX_GRAPHS]
+        self.dashboard.set_tiles([(row.id, row.name, row.unit) for row in rows])
+        self._set_graphs([(row.id, f"{row.name}, {row.unit}") for row in rows])
 
     def set_row_state(self, pid: str, tooltip: str, slow: bool, unsupported: bool) -> None:
-        if pid not in self._live_ids:
-            return
-        r = self._live_ids.index(pid)
-        color = UNSUPPORTED_COLOR if unsupported else SLOW_COLOR if slow else None
-        for col in range(1, 6):
-            item = self._table.item(r, col)
-            if item is not None:
-                item.setToolTip(tooltip)
-                item.setForeground(color if color is not None else self._table.palette().text().color())
+        tile = self.dashboard.tile(pid)
+        if tile is not None:
+            tile.set_state(tooltip, slow, unsupported)
 
     def update_values(self, texts: dict[str, tuple[str, str, str]]) -> None:
         """id → (значение, мин, макс) уже отформатированные."""
-        for r, pid in enumerate(self._live_ids):
-            if pid not in texts:
-                continue
-            for col, text in zip((2, 4, 5), texts[pid]):
-                item = self._table.item(r, col)
-                if item is not None and item.text() != text:
-                    item.setText(text)
-
-    def _on_graph_check(self, item: QTableWidgetItem) -> None:
-        if item.column() == 0:
-            self.graphs_changed.emit()
+        for pid, (value, low, high) in texts.items():
+            tile = self.dashboard.tile(pid)
+            if tile is not None:
+                tile.set_values(value, low, high)
 
     # --- Графики ---
 
-    def set_graphs(self, graphs: list[tuple[str, str]]) -> None:
-        """Графики для [(id, подпись)] — прежние данные теряются."""
+    def _set_graphs(self, graphs: list[tuple[str, str]]) -> None:
+        self._plots.setMinimumHeight(PLOT_HEIGHT * len(graphs))
         self._plots.clear()
         self._graphs.clear()
         first: pg.PlotItem | None = None
@@ -449,11 +421,18 @@ class LoggerWindow(QWidget):
                 graph.values.popleft()
 
     def redraw_graphs(self, now_s: float) -> None:
+        if self._tabs.currentIndex() != 1:
+            return  # вкладка графиков скрыта — точки копятся, рисовать незачем
         for graph in self._graphs.values():
             graph.curve.setData(list(graph.times), list(graph.values))
             graph.plot.setXRange(max(0.0, now_s - GRAPH_SECONDS), max(GRAPH_SECONDS, now_s), padding=0)
 
     # --- Диалоги ---
+
+    def show_profile_picker(self, profiles: list[tuple[str, str, str]]) -> None:
+        """Быстрый выбор: [(имя, путь, подсказка)]; окошко — под кнопкой «Профили»."""
+        at = self._profile_btn.mapToGlobal(QPoint(0, self._profile_btn.height()))
+        self._picker.show_profiles(profiles, at)
 
     def ask_profile_path(self, save: bool, folder: str) -> str | None:
         caption = tr("Сохранить профиль логгера") if save else tr("Открыть профиль логгера")

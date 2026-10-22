@@ -18,20 +18,21 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from src.i18n import N_, tr
 from src.logger.core.defs import LoggerDefs, LoggerParam
 from src.logger.core.params import decimals
-from src.logger.core.profile import ProfileItem, load_profile, save_profile
+from src.logger.core.paths import default_logs_root, rom_log_dir
+from src.logger.core.profile import ProfileItem, list_profiles, load_profile, save_profile
 from src.logger.core.runner import LoggerRunner
 from src.logger.core.session import Connection, Poller, Sample, connect
 from src.logger.core.trace import Trace
 from src.logger.core.transport.emulator import FakeEcu, FakeOpenPort, demo_memory
-from src.logger.core.transport.op2 import ByteStream, OpenPort2
+from src.logger.core.transport.op2 import NO_REPLY, ByteStream, OpenPort2, OpenPortError
 from src.logger.ui.window import LiveRow, LoggerWindow, ParamRow
 
 ROOT = Path(__file__).resolve().parents[2]
 LOGGER_DEFS = ROOT / "definitions" / "logger" / "logger_defs.xml"
 LOGGER_EXTRA = LOGGER_DEFS.parent / "extra"
+LOGGER_PROFILES = LOGGER_DEFS.parent / "profiles"
 EMULATOR_PORT = "emulator"
 UI_HZ = 10
-DEFAULT_GRAPHS = 4
 
 _KIND_TITLES = {
     "parameter": N_("Стандартные"),
@@ -57,6 +58,9 @@ class LoggerSettings(Protocol):
 
     @property
     def logger_trace_dir(self) -> Path: ...
+
+    @property
+    def logger_profiles_dir(self) -> Path: ...
 
     def logger_log_dir(self) -> str | None: ...
 
@@ -94,12 +98,12 @@ class LoggerPresenter:
             extra.append((settings.logger_extra_dir, "user"))
         self.defs = LoggerDefs.load(LOGGER_DEFS, extra)
         self._stream: ByteStream | None = None
+        self._device: OpenPort2 | None = None
         self._trace: Trace | None = None
         self.connection: Connection | None = None
         self.runner: LoggerRunner | None = None
         self._supported: set[str] | None = None  # None — не подключены, показываем всё
         self._units: dict[str, str] = {}  # выбранные единицы (переживают перестройку дерева)
-        self._graphs: set[str] = set()
         self._latest: Sample | None = None
         self._min: dict[str, float] = {}
         self._max: dict[str, float] = {}
@@ -115,9 +119,10 @@ class LoggerPresenter:
         w.disconnect_requested.connect(self.disconnect)
         w.refresh_ports_requested.connect(self.refresh_ports)
         w.selection_changed.connect(self._on_selection)
-        w.graphs_changed.connect(self._on_graphs)
         w.record_toggled.connect(self._on_record)
         w.mark_requested.connect(self.mark)
+        w.pick_profile_requested.connect(self.pick_profile)
+        w.profile_chosen.connect(self._apply_profile_file)
         w.open_profile_requested.connect(self._open_profile)
         w.save_profile_requested.connect(self._save_profile)
         w.choose_folder_requested.connect(self._choose_folder)
@@ -138,11 +143,13 @@ class LoggerPresenter:
         self.disconnect()
         try:
             if port == EMULATOR_PORT:
-                self._stream = FakeOpenPort(FakeEcu(memory=demo_memory()))
+                # Как на машине: RAM по CAN не отдаётся, K-line отвечает с задержкой
+                self._stream = FakeOpenPort(FakeEcu(memory=demo_memory(), can_rejects_ram=True), kline_delay=0.08)
             else:
                 self._stream = self._open_port(port)
                 self._trace = self._open_trace()
             device = OpenPort2(self._stream, self._trace)
+            self._device = device
             version = device.identify()
             voltage = device.read_voltage()
             if self._trace:
@@ -151,7 +158,10 @@ class LoggerPresenter:
         except Exception as exc:  # noqa: BLE001 — показать в окне; порт закрыть
             self._close_port()
             self.window.set_connected(False, tr("Не подключено"))
-            self.window.set_error(tr("Не удалось подключиться: {error}", error=exc))
+            if isinstance(exc, OpenPortError) and exc.code == NO_REPLY:
+                self.window.set_error(tr("Адаптер не отвечает — отключите и снова подключите его USB"))
+            else:
+                self.window.set_error(tr("Не удалось подключиться: {error}", error=exc))
             return
         if self._settings is not None:
             self._settings.set_logger_port(port)
@@ -197,6 +207,13 @@ class LoggerPresenter:
         return Trace.to_file(folder / f"trace_{datetime.now():%Y%m%d_%H%M%S}.log")
 
     def _close_port(self) -> None:
+        # Сначала закрыть каналы адаптера — не оставлять его с открытым CAN и фильтрами
+        device, self._device = self._device, None
+        if device is not None:
+            try:
+                device.close_all()
+            except Exception:  # noqa: BLE001 — адаптер уже мог пропасть, порт закроем всё равно
+                pass
         stream, self._stream = self._stream, None
         close = getattr(stream, "close", None)
         if callable(close):
@@ -236,23 +253,10 @@ class LoggerPresenter:
         selected = self.window.selected()
         self._min.clear()
         self._max.clear()
-        if not self._graphs:
-            self._graphs = {pid for pid, _units in selected[:DEFAULT_GRAPHS]}
-        rows = [
-            LiveRow(pid, self.defs.get(pid).name, units, pid in self._graphs)
-            for pid, units in selected
-        ]
-        self.window.set_live_rows(rows)
+        # Всё отмеченное слева — и на дашборд, и на график
+        self.window.set_live_rows([LiveRow(pid, self.defs.get(pid).name, units) for pid, units in selected])
         if self.runner is not None:
             self.runner.select([(pid, units) for pid, units in selected])
-        self._on_graphs()
-
-    def _on_graphs(self) -> None:
-        graphed = self.window.graphed()
-        live = {pid for pid, _units in self.window.selected()}
-        self._graphs = set(graphed) | (self._graphs - live)
-        units = dict(self.window.selected())
-        self.window.set_graphs([(pid, f"{self.defs.get(pid).name}, {units[pid]}") for pid in graphed])
 
     # --- Опрос ---
 
@@ -289,7 +293,7 @@ class LoggerPresenter:
             slow, unsupported = pid in poller.slow, pid in poller.unsupported
             tip = (
                 tr("Этот ЭБУ не отдаёт параметр") if unsupported
-                else tr("Читается по K-line: замедляет весь опрос") if slow else ""
+                else tr("ЭБУ отдаёт его только по K-line: обновляется реже, остальное не тормозит") if slow else ""
             )
             self.window.set_row_state(pid, tip, slow, unsupported)
         self.window.set_rate(runner.rate)
@@ -301,14 +305,14 @@ class LoggerPresenter:
 
     # --- Запись ---
 
-    def log_folder(self) -> Path:
+    def log_root(self) -> Path:
+        """Корень логов: выбранный пользователем или ecu-editor-logs рядом с прошивкой."""
         saved = self._settings.logger_log_dir() if self._settings else None
-        if saved:
-            return Path(saved)
-        rom = self._rom_info()
-        if rom.path:
-            return Path(rom.path).parent / "logs"  # там же ищет логи ИИ (list_logs)
-        return Path.home() / "subaru_logs"
+        return Path(saved) if saved else default_logs_root(self._rom_info().path)
+
+    def log_folder(self) -> Path:
+        """Логи открытой прошивки: <корень>/<имя прошивки> (там же ищет ИИ — list_logs)."""
+        return rom_log_dir(self._rom_info().path, self.log_root())
 
     def _on_record(self, on: bool) -> None:
         if self.runner is None:
@@ -325,9 +329,8 @@ class LoggerPresenter:
             self.window.set_recording(None)
             self.window.set_error(tr("Выберите параметры для записи"))
             return
-        rom = self._rom_info()
-        stem = Path(rom.path).stem if rom.path else "log"
-        path = self.log_folder() / f"{stem}_{datetime.now():%Y%m%d_%H%M%S}.csv"
+        # Прошивка уже в имени папки — файл называется датой и временем
+        path = self.log_folder() / f"{datetime.now():%Y%m%d_%H%M%S}.csv"
         try:
             self.runner.start_recording(path)
         except OSError as exc:
@@ -337,18 +340,38 @@ class LoggerPresenter:
         self.window.set_recording(str(path))
 
     def _choose_folder(self) -> None:
-        folder = self.window.ask_folder(str(self.log_folder()))
+        # Выбирается корень; подпапка по имени прошивки добавляется сама
+        folder = self.window.ask_folder(str(self.log_root()))
         if folder and self._settings is not None:
             self._settings.set_logger_log_dir(folder)
         if folder:
-            self.window.set_log_folder(folder)
+            self.window.set_log_folder(str(self.log_folder()))
 
     # --- Профили ---
 
+    def profile_folders(self) -> list[tuple[Path, str]]:
+        """Профили из сборки (definitions/logger/profiles) и свои — рядом с settings.ini."""
+        folders = [(LOGGER_PROFILES, "extra")]
+        if self._settings is not None:
+            folders.append((self._settings.logger_profiles_dir, "user"))
+        return folders
+
+    def pick_profile(self) -> None:
+        entries = list_profiles(self.profile_folders())
+        self.window.show_profile_picker([
+            (e.name, str(e.path), tr("Свой профиль") if e.source == "user" else tr("Из сборки"))
+            for e in entries
+        ])
+
     def _open_profile(self) -> None:
-        path = self.window.ask_profile_path(False, str(self.log_folder()))
-        if not path:
-            return
+        path = self.window.ask_profile_path(False, str(self._profiles_dir()))
+        if path:
+            self._apply_profile_file(path)
+
+    def _profiles_dir(self) -> Path:
+        return self._settings.logger_profiles_dir if self._settings is not None else LOGGER_PROFILES
+
+    def _apply_profile_file(self, path: str) -> None:
         try:
             items = load_profile(path)
         except Exception as exc:  # noqa: BLE001
@@ -358,7 +381,6 @@ class LoggerPresenter:
 
     def apply_profile(self, items: list[ProfileItem]) -> None:
         known = [item for item in items if item.id in self.defs.params]
-        self._graphs = {item.id for item in known if item.graph}
         for item in known:
             if item.units:
                 self._units[item.id] = item.units
@@ -369,11 +391,13 @@ class LoggerPresenter:
             self.window.set_error(tr("Из профиля не подходят этому ЭБУ параметров: {n}", n=missing))
 
     def _save_profile(self) -> None:
-        path = self.window.ask_profile_path(True, str(self.log_folder()))
+        folder = self._profiles_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        path = self.window.ask_profile_path(True, str(folder))
         if not path:
             return
-        graphed = set(self.window.graphed())
-        items = [ProfileItem(pid, units, pid in graphed) for pid, units in self.window.selected()]
+        # График у нас — всё выбранное; в профиле RomRaider отмечаем так же
+        items = [ProfileItem(pid, units, True) for pid, units in self.window.selected()]
         save_profile(path, items)
 
 

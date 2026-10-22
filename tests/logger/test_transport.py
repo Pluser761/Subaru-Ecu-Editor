@@ -64,6 +64,60 @@ def test_bootloader_command_never_sent() -> None:
     assert stream.written == b""
 
 
-def test_no_reply_is_error() -> None:
+def test_no_reply_is_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(op2, "_REPLY_TIMEOUT", 0.05)
     with pytest.raises(OpenPortError):
         OpenPort2(ScriptedStream(b"")).close_all()
+
+
+# --- Байты настоящего OpenPort 2.0 на машине (журнал 21.10.2026, ЭБУ 5C42584007) ---
+
+# K-line после передачи init «80 10 F0 01 BF 40»: служебные записи с меткой времени,
+# эхо (0x20) и данные (0x00) — без неё; первые 64 байта ответа ЭБУ
+REAL_KLINE_INIT_RX = bytes.fromhex(
+    "61723305a001ad2f7e61723307208010f001bf40617233056001ad585961726f2032380d0a"
+    "617233058001ad68dc617233210080f01069ffa210115c42584007f3fac98c0b83feac0000"
+    "0066ced4fdb060001f6172332100200000000000dc00005d1f3080f0e6000043fb00f5c986"
+    "00000001edf1800081"
+)
+
+# CAN: эхо запроса чтения, «aro», отказ ЭБУ на адрес RAM — «7F A8 12»
+REAL_CAN_REJECT_RX = bytes.fromhex(
+    "617236091001aa90300000" "07e0"  # эхо: status 0x10, время, CAN ID 0x7E0
+    "61726f2031320d0a"  # «aro 12»
+    "6172360c4001aa91960000" "07e8" "7fa812"  # ответ 0x7E8: отказ на A8, код 0x12
+)
+
+
+def test_real_kline_records_have_no_timestamp() -> None:
+    dev = OpenPort2(ScriptedStream(REAL_KLINE_INIT_RX))
+    frames = []
+    while (frame := dev.receive(op2.ISO9141, 0.01)) is not None:
+        frames.append(frame)
+    assert [f.status for f in frames] == [0xA0, op2.KLINE_ECHO, 0x60, 0x80, 0x00, 0x00]
+    assert frames[1].data == bytes.fromhex("8010F001BF40")  # эхо своей передачи
+    data = b"".join(f.data for f in frames if f.status == op2.KLINE_DATA)
+    assert data[:4] == bytes.fromhex("80F01069")  # пакет SSM: к тестеру, от ЭБУ, 0x69 байт
+    assert data[5 + 3 : 5 + 8] == bytes.fromhex("5C42584007")  # ID ЭБУ после кода FF
+
+
+def test_real_can_rejection() -> None:
+    dev = OpenPort2(ScriptedStream(REAL_CAN_REJECT_RX))
+    statuses = []
+    while (frame := dev.receive(op2.ISO15765, 0.01)) is not None:
+        statuses.append((frame.status, frame.data))
+    assert statuses[0][0] == op2.RX_TX_ECHO
+    assert statuses[1] == (op2.RX_COMPLETE, bytes.fromhex("000007E8") + bytes.fromhex("7FA812"))
+
+
+def test_identify_resyncs_stuck_adapter() -> None:
+    port = FakeOpenPort()
+    port.stuck_bytes = 40  # ждёт ещё 40 байт данных оборванной команды att
+    assert OpenPort2(port).identify().startswith("main code version")
+
+
+def test_identify_dead_adapter_has_no_reply_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(op2, "_REPLY_TIMEOUT", 0.05)
+    with pytest.raises(OpenPortError) as exc:
+        OpenPort2(ScriptedStream(b"")).identify()
+    assert exc.value.code == op2.NO_REPLY

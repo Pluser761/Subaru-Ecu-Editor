@@ -63,6 +63,11 @@ class AppSettings:
         return Path(self.file_name).parent / "definitions" / "logger" / "extra"
 
     @property
+    def logger_profiles_dir(self) -> Path:
+        """Свои профили логгера — `definitions/logger/profiles` рядом с settings.ini."""
+        return Path(self.file_name).parent / "definitions" / "logger" / "profiles"
+
+    @property
     def logger_trace_dir(self) -> Path:
         """Журналы обмена с адаптером (отладка подключения) — `logger_traces` рядом с settings.ini."""
         return Path(self.file_name).parent / "logger_traces"
@@ -70,7 +75,8 @@ class AppSettings:
     # --- Логгер ---
 
     def logger_log_dir(self) -> str | None:
-        """Папка логов, выбранная пользователем; None — по умолчанию (logs рядом с прошивкой)."""
+        """Корень логов, выбранный пользователем; None — ecu-editor-logs рядом с прошивкой.
+        Логи прошивки — в подпапке по её имени (src/logger/core/paths.py)."""
         value = self._settings.value(_LOGGER_LOG_DIR)
         return str(value) if value else None
 

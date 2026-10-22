@@ -34,6 +34,8 @@ class FakeEcu:
     memory: Memory = field(default=lambda address: 0)
     can_enabled: bool = True  # False — по CAN ЭБУ молчит (CAN не разведён в разъёме)
     can_rejected: set[int] = field(default_factory=set)  # адреса, на которые по CAN отказ
+    # Как ЭБУ 5C42584007 на машине (21.10.2026): адреса RAM (0xFF0000+) по CAN — отказ 7F A8 12
+    can_rejects_ram: bool = False
     requests: list[tuple[str, bytes]] = field(default_factory=list)
 
     @property
@@ -51,6 +53,8 @@ class FakeEcu:
             addresses = _addresses(message[2:])
             if any(a in self.can_rejected for a in addresses):
                 return bytes([ssm.NEGATIVE_RESPONSE, command, 0x31])
+            if self.can_rejects_ram and any(a >= 0xFF0000 for a in addresses):
+                return bytes([ssm.NEGATIVE_RESPONSE, command, 0x12])
             return bytes([ssm.READ_ADDRESS_RESPONSE]) + bytes(self.memory(a) & 0xFF for a in addresses)
         return bytes([ssm.NEGATIVE_RESPONSE, command, 0x11])
 
@@ -75,9 +79,15 @@ def _addresses(data: bytes) -> list[int]:
 class FakeOpenPort:
     """Порт адаптера для OpenPort2: write() принимает команды, read() отдаёт ответы."""
 
-    def __init__(self, ecu: FakeEcu | None = None, battery_mv: int = 12600) -> None:
+    def __init__(self, ecu: FakeEcu | None = None, battery_mv: int = 12600, kline_delay: float = 0.0) -> None:
         self.ecu = ecu or FakeEcu()
         self.battery_mv = battery_mv
+        # Задержка ответа ЭБУ по K-line, с: на 4800 бод ответ идёт десятки мс
+        self.kline_delay = kline_delay
+        self._delayed: list[tuple[float, bytes]] = []
+        # Адаптер «застрял» посреди двоичных данных оборванной команды: столько байт
+        # он примет как данные, а не как команды
+        self.stuck_bytes = 0
         self.channels: dict[int, int] = {}  # протокол → скорость
         self.config: dict[tuple[int, int], int] = {}
         self.filters: dict[int, list[bytes]] = {}
@@ -88,12 +98,19 @@ class FakeOpenPort:
     # --- Порт ---
 
     def write(self, data: bytes) -> int:
-        self._in += data
+        swallowed = min(self.stuck_bytes, len(data))
+        self.stuck_bytes -= swallowed
+        self._in += data[swallowed:]
         while self._handle_one():
             pass
         return len(data)
 
     def read(self, size: int = 1) -> bytes:
+        now = time.monotonic()
+        due = [data for at, data in self._delayed if at <= now]
+        self._delayed = [(at, data) for at, data in self._delayed if at > now]
+        for data in due:
+            self._out += data
         chunk = bytes(self._out[:size])
         del self._out[:size]
         return chunk
@@ -162,21 +179,31 @@ class FakeOpenPort:
                     self._frame(proto, op2.RX_FIRST_FRAME, (0x7E8).to_bytes(4, "big"))
                 self._frame(proto, op2.RX_COMPLETE, (0x7E8).to_bytes(4, "big") + response)
         elif proto == op2.ISO9141:
-            loopback = self.config.get((proto, op2.LOOPBACK), 0)
-            if loopback:
-                self._frame(proto, op2.RX_TX_ECHO, payload)
+            # Как у настоящего адаптера (журнал 21.10.2026): служебные записи с меткой времени,
+            # эхо и данные — без неё; ответ ЭБУ — кусками до 32 байт
+            self._frame(proto, 0xA0, b"")
+            if self.config.get((proto, op2.LOOPBACK), 0):
+                self._kline_data(op2.KLINE_ECHO, payload)
+            self._frame(proto, 0x60, b"")
             self._reply(f"aro {seq}")
             response = self.ecu.handle_kline(payload) if self.filters.get(proto) else None
             if response is not None:
-                # Ответ K-line может прийти кусками — так и отдаём, чтобы SSM собирал пакет
-                half = len(response) // 2
-                self._frame(proto, 0, response[:half])
-                self._frame(proto, 0, response[half:])
+                self._frame(proto, op2.RX_FIRST_FRAME, b"")
+                for i in range(0, len(response), 32):
+                    self._kline_data(op2.KLINE_DATA, response[i : i + 32])
         else:
             self._reply(f"are {ERR_FAILED} {seq}")
 
     def _reply(self, text: str) -> None:
         self._out += text.encode() + b"\r\n"
+
+    def _kline_data(self, status: int, data: bytes) -> None:
+        body = bytes([status]) + data
+        record = b"ar" + str(op2.ISO9141).encode() + bytes([len(body)]) + body
+        if status == op2.KLINE_DATA and self.kline_delay > 0:
+            self._delayed.append((time.monotonic() + self.kline_delay, record))
+        else:
+            self._out += record
 
     def _frame(self, proto: int, status: int, data: bytes) -> None:
         stamp = int((time.monotonic() - self._start) * 1e6) & 0xFFFFFFFF

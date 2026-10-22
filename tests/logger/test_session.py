@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import math
+import time
 import struct
 from pathlib import Path
 
@@ -91,8 +92,9 @@ def test_rejected_address_moves_to_kline(defs: LoggerDefs) -> None:
     dev, ecu = _device(can_rejected={0xFF7768})
     poller = Poller(connect(dev), defs)
     poller.select([("P8", None), ("E9002", None)])
-    sample = poller.poll()
-    assert sample.values == {"P8": 3000, "E9002": 2}
+    first = poller.poll()  # отказ найден, запрос по K-line отправлен — значения ещё нет
+    assert first.values["P8"] == 3000 and math.isnan(first.values["E9002"])
+    assert poller.poll().values == {"P8": 3000, "E9002": 2}
     assert poller.slow == {"E9002"} and not poller.unsupported
     kline_reads = [m for kind, m in ecu.requests if kind == "kline" and m[4] == 0xA8]
     assert kline_reads and all(m[6:9] == bytes.fromhex("FF7768") for m in kline_reads)
@@ -138,3 +140,18 @@ def test_csv_empty_cell_for_nan() -> None:
 
     CsvLogWriter(out, [("P8", "Engine Speed", "rpm", 0)]).write(Sample(1.6, {"P8": math.nan}))
     assert out.getvalue().splitlines()[1] == "2;;0"
+
+
+def test_slow_kline_does_not_block_can(defs: LoggerDefs) -> None:
+    # Ответ по K-line идёт 0.15 с — опросы CAN его не ждут, значение K-line приходит позже
+    fake = FakeEcu(memory=lambda a: MEMORY.get(a, 0), can_rejected={0xFF7768})
+    port = FakeOpenPort(fake, kline_delay=0.15)
+    poller = Poller(connect(OpenPort2(port)), defs)
+    poller.select([("P8", None), ("E9002", None)])
+    poller.poll()  # находит отказ, открывает K-line (init ждёт ответа — это один раз)
+    started = time.monotonic()
+    samples = [poller.poll() for _ in range(5)]
+    assert time.monotonic() - started < 0.15  # пять опросов CAN быстрее одного ответа K-line
+    assert all(s.values["P8"] == 3000 for s in samples)
+    time.sleep(0.2)
+    assert poller.poll().values["E9002"] == 2

@@ -5,7 +5,9 @@
   после CRLF; ответ `ar<тип> … <номер>\\r\\n` повторяет номер команды;
 - принятые кадры идут в том же потоке двоичными записями
   `'a' 'r' <цифра протокола> <len> <status> <timestamp:4> <данные…>` (len — байт после него),
-  у CAN/ISO15765 первые 4 байта данных — CAN ID;
+  у CAN/ISO15765 первые 4 байта данных — CAN ID; у K-line (проверено на машине 21.10.2026)
+  записи с данными — без метки времени: `<status 0x00 | 0x20> <данные…>`, а с меткой —
+  только служебные без данных (0xA0, 0x60 — передача, 0x80 — начало приёма);
 - без фильтра адаптер не отдаёт ни одного кадра; таймаут передачи должен быть ненулевым.
 
 Команду `atx` (перевод адаптера в загрузчик) не отправляем никогда.
@@ -50,8 +52,16 @@ FLOW_CONTROL_FILTER = 3
 RX_TX_ECHO = 0x10  # эхо нашей передачи
 RX_FIRST_FRAME = 0x80  # ISO-TP: пришёл первый кадр, сообщение собирается
 RX_COMPLETE = 0x40  # полное сообщение
+# K-line: данные приёма (0x00) и эхо своей передачи (0x20) — без метки времени
+KLINE_DATA = 0x00
+KLINE_ECHO = 0x20
+_KLINE_PROTOCOLS = (ISO9141, 4)
 
 _REPLY_TIMEOUT = 1.5
+# Пустых строк для сброса разбора команд адаптера: больше самой длинной передачи
+RESYNC_NEWLINES = 160
+# Код ошибки «адаптер не ответил» (не J2534) — чтобы интерфейс подсказал переподключить USB
+NO_REPLY = -1
 
 
 class ByteStream(Protocol):
@@ -98,15 +108,20 @@ class OpenPort2:
     # --- Команды ---
 
     def identify(self) -> str:
-        """`ati` → «main code version : 1.17.4877» (без номера команды)."""
-        self._write(b"ati\r\n")
-        deadline = time.monotonic() + _REPLY_TIMEOUT
-        while True:
-            item = self._next_item(deadline)
-            if item is None:
-                raise OpenPortError("OpenPort: no reply to ati")
-            if isinstance(item, Reply) and item.kind == "i":
-                return " ".join(item.args)
+        """`ati` → «main code version : 1.17.4877» (без номера команды).
+
+        Если адаптер молчит, он мог застрять посреди двоичных данных прошлой команды
+        (оборванный `att…`): пустые строки дочитывают их, после чего `ati` повторяется.
+        """
+        for attempt in range(2):
+            if attempt:
+                self._write(b"\r\n" * RESYNC_NEWLINES)
+            self._write(b"ati\r\n")
+            deadline = time.monotonic() + _REPLY_TIMEOUT
+            while (item := self._next_item(deadline)) is not None:
+                if isinstance(item, Reply) and item.kind == "i":
+                    return " ".join(item.args)
+        raise OpenPortError("OpenPort: no reply to ati", NO_REPLY)
 
     def close_all(self) -> None:
         self.command("ata")
@@ -136,18 +151,30 @@ class OpenPort2:
         reply = self.command(f"atf{protocol}", kind, tx_flags, len(mask), payload=mask + pattern + flow)
         return int(reply.args[0])
 
-    def transmit(self, protocol: int, data: bytes, tx_flags: int = 0, timeout_us: int = 200_000) -> None:
+    def transmit(
+        self, protocol: int, data: bytes, tx_flags: int = 0, timeout_us: int = 200_000, wait: bool = True
+    ) -> None:
+        """Передать сообщение. wait=False — не ждать «aro»: по K-line он приходит только после
+        физической передачи (десятки мс), а за это время можно опрашивать CAN; ответ на такую
+        команду потом молча пропускается."""
         # Таймаут 0 адаптер понимает как «не передавать» — всегда ненулевой
-        self.command(f"att{protocol}", len(data), tx_flags, max(timeout_us, 1000), payload=data)
+        args = (len(data), tx_flags, max(timeout_us, 1000))
+        if wait:
+            self.command(f"att{protocol}", *args, payload=data)
+        else:
+            self._send_command(f"att{protocol}", *args, payload=data)
 
-    def command(self, name: str, *args: int, payload: bytes = b"") -> Reply:
-        """Отправить команду и дождаться ответа с её номером; `are` — OpenPortError."""
+    def _send_command(self, name: str, *args: int, payload: bytes = b"") -> int:
         if name.startswith("atx"):
             raise ValueError("atx (bootloader) is never sent")
         self._seq += 1
-        seq = self._seq
-        line = " ".join([name, *(str(a) for a in args), str(seq)]).encode() + b"\r\n"
+        line = " ".join([name, *(str(a) for a in args), str(self._seq)]).encode() + b"\r\n"
         self._write(line + payload)
+        return self._seq
+
+    def command(self, name: str, *args: int, payload: bytes = b"") -> Reply:
+        """Отправить команду и дождаться ответа с её номером; `are` — OpenPortError."""
+        seq = self._send_command(name, *args, payload=payload)
         deadline = time.monotonic() + _REPLY_TIMEOUT
         while True:
             item = self._next_item(deadline)
@@ -227,6 +254,9 @@ class OpenPort2:
             length = buf[3]
             payload = bytes(buf[4 : 4 + length])
             del buf[: 4 + length]
+            protocol = int(kind)
+            if protocol in _KLINE_PROTOCOLS and payload and payload[0] in (KLINE_DATA, KLINE_ECHO):
+                return RxFrame(protocol=protocol, status=payload[0], timestamp=0, data=payload[1:])
             if length < 5:
                 return None
             return RxFrame(

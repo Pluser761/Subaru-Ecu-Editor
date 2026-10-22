@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from src.logger.core.transport.links import Link
 
@@ -89,6 +89,16 @@ def split_kline(buffer: bytes) -> tuple[bytes | None, bytes]:
     return packet, rest
 
 
+@dataclass
+class _PendingRead:
+    """Запрос чтения по K-line, ответ на который ещё собирается."""
+
+    request: bytes
+    count: int
+    deadline: float
+    buffer: bytes = field(default=b"")
+
+
 def address_bytes(addresses: Sequence[int]) -> bytes:
     return b"".join(a.to_bytes(3, "big") for a in addresses)
 
@@ -100,6 +110,7 @@ class SsmClient:
         self.link = link
         self.timeout = timeout
         self.max_addresses = CAN_MAX_ADDRESSES if link.name == "can" else KLINE_MAX_ADDRESSES
+        self._pending: _PendingRead | None = None
 
     @property
     def transport(self) -> str:
@@ -128,6 +139,51 @@ class SsmClient:
                 raise SsmError(f"SSM: asked {len(chunk)} addresses, got {len(data)} bytes")
             out += data
         return bytes(out)
+
+    # --- Чтение без ожидания (K-line рядом с быстрым CAN) ---
+
+    @property
+    def pending(self) -> bool:
+        return self._pending is not None
+
+    def begin_read(self, addresses: Sequence[int]) -> None:
+        """Отправить чтение по K-line и не ждать ответа: его собирает poll_read между
+        опросами CAN. Не больше max_addresses адресов за раз."""
+        if self.link.name == "can":
+            raise ValueError("begin_read is for K-line")
+        request = kline_packet(READ_ADDRESS, b"\x00" + address_bytes(addresses[: self.max_addresses]))
+        self.link.flush()
+        self.link.send(request, wait=False)
+        count = min(len(addresses), self.max_addresses)
+        self._pending = _PendingRead(request, count, time.monotonic() + self.timeout + count * 0.005)
+
+    def poll_read(self) -> bytes | None:
+        """Ответ на begin_read, если уже пришёл целиком; None — ещё нет; SsmError — не дождались."""
+        pending = self._pending
+        if pending is None:
+            return None
+        while (chunk := self.link.receive(0)) is not None:
+            pending.buffer += chunk
+        while True:
+            try:
+                packet, pending.buffer = split_kline(pending.buffer)
+            except SsmError:
+                self._pending = None
+                raise
+            if packet is None:
+                break
+            if packet == pending.request:
+                continue  # эхо своей передачи
+            if packet[1] == TESTER_ADDRESS and packet[4] == READ_ADDRESS_RESPONSE:
+                self._pending = None
+                data = packet[5:-1]
+                if len(data) != pending.count:
+                    raise SsmError(f"SSM: asked {pending.count} addresses, got {len(data)} bytes")
+                return data
+        if time.monotonic() > pending.deadline:
+            self._pending = None
+            raise SsmError("SSM/K-line: no response to a8")
+        return None
 
     # --- Обмен ---
 
