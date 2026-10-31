@@ -68,6 +68,16 @@ class LiveRow:
 
 
 @dataclass
+class DtcRow:
+    """Код неисправности в таблице «Ошибки»."""
+
+    code: str
+    name: str
+    current: bool  # активна сейчас
+    stored: bool  # сохранена в памяти ЭБУ
+
+
+@dataclass
 class _Graph:
     plot: pg.PlotItem
     curve: pg.PlotDataItem
@@ -87,6 +97,8 @@ class LoggerWindow(QWidget):
     open_profile_requested = pyqtSignal()
     save_profile_requested = pyqtSignal()
     choose_folder_requested = pyqtSignal()
+    dtc_read_requested = pyqtSignal()
+    dtc_clear_requested = pyqtSignal()
     closed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -98,6 +110,9 @@ class LoggerWindow(QWidget):
         self._graphs: dict[str, _Graph] = {}
         self._mark_times: list[float] = []
         self._filling = False  # программное заполнение дерева — не слать selection_changed
+        self._recording = False
+        self._dtc_read = False  # коды прочитаны — сброс разрешён
+        self._dtc_busy = False
 
         # --- Верхняя панель: порт, подключение, статус ---
         self._ports = QComboBox()
@@ -196,9 +211,46 @@ class LoggerWindow(QWidget):
         plots_scroll = QScrollArea()
         plots_scroll.setWidgetResizable(True)
         plots_scroll.setWidget(self._plots)
+
+        # --- Справа: вкладка «Ошибки» — чтение и сброс DTC ---
+        self._dtc_tree = QTreeWidget()
+        self._dtc_tree.setHeaderLabels([tr("Код"), tr("Описание"), tr("Сейчас"), tr("Сохранена")])
+        self._dtc_tree.setRootIsDecorated(False)
+        dtc_header = self._dtc_tree.header()
+        assert dtc_header is not None
+        dtc_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        dtc_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        dtc_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        dtc_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        dtc_header_item = self._dtc_tree.headerItem()
+        if dtc_header_item is not None:
+            dtc_header_item.setToolTip(2, tr("Неисправность активна в этом запуске"))
+            dtc_header_item.setToolTip(3, tr("Неисправность записана в памяти ЭБУ"))
+        self._dtc_read_btn = QPushButton(tr("Обновить"))
+        self._dtc_read_btn.clicked.connect(self.dtc_read_requested)
+        self._dtc_clear_btn = QPushButton(tr("Сбросить ошибки"))
+        self._dtc_clear_btn.clicked.connect(self.dtc_clear_requested)
+        self._dtc_status = QLabel("")
+        self._dtc_status.setWordWrap(True)
+        dtc_hint = QLabel(tr("Сброс стирает и обученные значения (топливные коррекции, ХХ), "
+                              "и мониторы готовности."))
+        dtc_hint.setStyleSheet("color: #777;")
+        dtc_hint.setWordWrap(True)
+        dtc_buttons = QHBoxLayout()
+        dtc_buttons.addWidget(self._dtc_read_btn)
+        dtc_buttons.addWidget(self._dtc_clear_btn)
+        dtc_buttons.addStretch(1)
+        dtc_tab = QWidget()
+        dtc_layout = QVBoxLayout(dtc_tab)
+        dtc_layout.addWidget(self._dtc_tree, 1)
+        dtc_layout.addWidget(self._dtc_status)
+        dtc_layout.addLayout(dtc_buttons)
+        dtc_layout.addWidget(dtc_hint)
+
         self._tabs = QTabWidget()
         self._tabs.addTab(self.dashboard, tr("Дашборд"))
         self._tabs.addTab(plots_scroll, tr("График"))
+        self._tabs.addTab(dtc_tab, tr("Ошибки"))
         right = self._tabs
 
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -214,6 +266,7 @@ class LoggerWindow(QWidget):
         self._flash_timer = QTimer(self)
         self._flash_timer.setSingleShot(True)
         self._flash_timer.timeout.connect(lambda: self._mark_flash.setText(""))
+        self._update_dtc_buttons()
 
     # --- Подключение ---
 
@@ -238,6 +291,12 @@ class LoggerWindow(QWidget):
         if not connected:
             self._rate.setText("")
             self.set_recording(None)
+            # Коды другого ЭБУ/сессии не показываем; сброс снова потребует чтения
+            self._dtc_read = False
+            self._dtc_busy = False
+            self._dtc_tree.clear()
+            self._dtc_status.setText("")
+        self._update_dtc_buttons()
         self._status.setStyleSheet("color: #555;")
         self._status.setText(status)
 
@@ -263,12 +322,14 @@ class LoggerWindow(QWidget):
         self._folder.setToolTip(folder)
 
     def set_recording(self, path: str | None) -> None:
+        self._recording = path is not None
         self._record_btn.blockSignals(True)
         self._record_btn.setChecked(path is not None)
         self._record_btn.blockSignals(False)
         self._record_btn.setText(tr("■ Стоп") if path else tr("● Запись"))
         self._record_btn.setStyleSheet(f"color: {MARK_COLOR};" if path else "")
         self._tree.setEnabled(path is None)  # пока пишется лог, колонки не меняются
+        self._update_dtc_buttons()  # во время записи сброс недоступен
         if path:
             self._folder.setText(path)
             self._folder.setToolTip(path)
@@ -385,6 +446,69 @@ class LoggerWindow(QWidget):
             tile = self.dashboard.tile(pid)
             if tile is not None:
                 tile.set_values(value, low, high)
+
+    # --- Ошибки (DTC) ---
+
+    def set_dtc_rows(self, rows: list[DtcRow]) -> None:
+        """Показать прочитанные коды; пустой список — ошибок нет (чтение удалось)."""
+        self._dtc_tree.clear()
+        for row in rows:
+            item = QTreeWidgetItem([
+                row.code, row.name,
+                "✓" if row.current else "",
+                "✓" if row.stored else "",
+            ])
+            item.setToolTip(1, row.name)
+            self._dtc_tree.addTopLevelItem(item)
+        self._dtc_read = True
+        self.set_dtc_status(tr("Кодов: {n}", n=len(rows)) if rows else tr("Ошибок нет"))
+        self._update_dtc_buttons()
+
+    def set_dtc_status(self, text: str) -> None:
+        self._dtc_status.setStyleSheet("color: #555;")
+        self._dtc_status.setText(text)
+
+    def forget_dtc(self) -> None:
+        """Содержимое памяти ошибок могло измениться — данные больше не достоверны."""
+        self._dtc_read = False
+        self._dtc_tree.clear()
+        self._update_dtc_buttons()
+
+    def set_dtc_error(self, text: str) -> None:
+        self._dtc_status.setStyleSheet("color: #c03030;")
+        self._dtc_status.setText(text)
+
+    def set_dtc_busy(self, busy: bool, text: str = "") -> None:
+        """На время чтения/сброса кнопки заблокированы; text — что происходит."""
+        self._dtc_busy = busy
+        if text:
+            self.set_dtc_status(text)
+        self._update_dtc_buttons()
+
+    def _update_dtc_buttons(self) -> None:
+        self._dtc_read_btn.setEnabled(self._connected and not self._dtc_busy)
+        self._dtc_clear_btn.setEnabled(self._connected and not self._dtc_busy
+                                       and not self._recording and self._dtc_read)
+        if self._recording:
+            tip = tr("Пока пишется лог, сброс недоступен — остановите запись")
+        elif not self._dtc_read:
+            tip = tr("Сначала прочитайте коды")
+        else:
+            tip = tr("Сброс стирает и обученные значения (топливные коррекции, ХХ), "
+                     "и мониторы готовности.")
+        self._dtc_clear_btn.setToolTip(tip)
+
+    def ask_clear_dtc(self) -> bool:
+        """Подтверждение сброса: он стирает и обученные значения, и мониторы готовности."""
+        answer = QMessageBox.question(
+            self,
+            tr("Сброс ошибок"),
+            tr("Сбросить память ошибок (reset ЭБУ)?\n\nВместе с кодами сбросятся обученные значения "
+               "(топливные коррекции, ХХ) и мониторы готовности. После сброса коды будут прочитаны заново."),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     # --- Графики ---
 

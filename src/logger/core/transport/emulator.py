@@ -1,9 +1,11 @@
 """Эмулятор OpenPort 2.0 и ЭБУ Subaru за ним — чтобы проверять логгер без машины.
 
-FakeOpenPort ведёт себя как порт адаптера (write/read): разбирает команды `at*`, отвечает
-`aro`/`are`, а передачу на CAN или K-line отдаёт FakeEcu и возвращает его ответ двоичной
-записью в том же формате, что и адаптер. Формат записей K-line взят по аналогии с CAN
-(на железе не проверен) — эмулятор и op2.py согласованы между собой.
+FakeEcu отвечает на init, читает адреса (`A8`), пишет байт (`B8`) и хранит память ошибок:
+reset ЭБУ (0x40 по 0x000060) обнуляет адреса DTC. FakeOpenPort ведёт себя как порт адаптера
+(write/read): разбирает команды `at*`, отвечает `aro`/`are`, а передачу на CAN или K-line
+отдаёт FakeEcu и возвращает его ответ двоичной записью в том же формате, что и адаптер.
+Формат записей K-line взят по аналогии с CAN (на железе не проверен) — эмулятор и op2.py
+согласованы между собой.
 """
 
 from __future__ import annotations
@@ -36,11 +38,30 @@ class FakeEcu:
     can_rejected: set[int] = field(default_factory=set)  # адреса, на которые по CAN отказ
     # Как ЭБУ 5C42584007 на машине (21.10.2026): адреса RAM (0xFF0000+) по CAN — отказ 7F A8 12
     can_rejects_ram: bool = False
+    # Память ошибок: адреса байт DTC, которые обнуляются reset ЭБУ (0x40 по 0x000060)
+    dtc_addresses: set[int] = field(default_factory=set)
+    # Записи B8 поверх memory: адрес → байт
+    writes: dict[int, int] = field(default_factory=dict)
+    resets: int = 0  # сколько раз принят «Reset ECU»
     requests: list[tuple[str, bytes]] = field(default_factory=list)
 
     @property
     def init_data(self) -> bytes:
         return b"\x00\x01\x02" + self.ecu_id + self.capabilities
+
+    def read(self, address: int) -> int:
+        """Байт памяти: сначала записи B8, потом memory (функция может меняться во времени)."""
+        return self.writes.get(address, self.memory(address)) & 0xFF
+
+    def write(self, address: int, value: int) -> None:
+        """Запись байта по адресу (B8); 0x40 по 0x000060 — RomRaider «Reset ECU»:
+        стирает коды неисправностей (как и на машине, проверяется тестами)."""
+        value &= 0xFF
+        self.writes[address] = value
+        if address == ssm.ECU_RESET_ADDRESS and value == ssm.ECU_RESET_CODE:
+            self.resets += 1
+            for dtc in self.dtc_addresses:
+                self.writes[dtc] = 0
 
     def handle_can(self, message: bytes) -> bytes | None:
         self.requests.append(("can", message))
@@ -55,7 +76,12 @@ class FakeEcu:
                 return bytes([ssm.NEGATIVE_RESPONSE, command, 0x31])
             if self.can_rejects_ram and any(a >= 0xFF0000 for a in addresses):
                 return bytes([ssm.NEGATIVE_RESPONSE, command, 0x12])
-            return bytes([ssm.READ_ADDRESS_RESPONSE]) + bytes(self.memory(a) & 0xFF for a in addresses)
+            return bytes([ssm.READ_ADDRESS_RESPONSE]) + bytes(self.read(a) for a in addresses)
+        if command == ssm.WRITE_ADDRESS:
+            if len(message) < 5:
+                return bytes([ssm.NEGATIVE_RESPONSE, command, 0x13])
+            self.write(int.from_bytes(message[1:4], "big"), message[4])
+            return bytes([ssm.WRITE_ADDRESS_RESPONSE, message[4]])
         return bytes([ssm.NEGATIVE_RESPONSE, command, 0x11])
 
     def handle_kline(self, packet: bytes) -> bytes | None:
@@ -66,7 +92,12 @@ class FakeEcu:
         if command == ssm.KLINE_INIT:
             body = bytes([ssm.KLINE_INIT_RESPONSE]) + self.init_data
         elif command == ssm.READ_ADDRESS:
-            body = bytes([ssm.READ_ADDRESS_RESPONSE]) + bytes(self.memory(a) & 0xFF for a in _addresses(data[1:]))
+            body = bytes([ssm.READ_ADDRESS_RESPONSE]) + bytes(self.read(a) for a in _addresses(data[1:]))
+        elif command == ssm.WRITE_ADDRESS:
+            if len(data) < 4:
+                return None
+            self.write(int.from_bytes(data[:3], "big"), data[3])
+            body = bytes([ssm.WRITE_ADDRESS_RESPONSE, data[3]])
         else:
             return None
         return ssm.kline_packet(body[0], body[1:], dest=ssm.TESTER_ADDRESS, src=ssm.ECU_ADDRESS)
@@ -198,12 +229,16 @@ class FakeOpenPort:
         self._out += text.encode() + b"\r\n"
 
     def _kline_data(self, status: int, data: bytes) -> None:
-        body = bytes([status]) + data
-        record = b"ar" + str(op2.ISO9141).encode() + bytes([len(body)]) + body
-        if status == op2.KLINE_DATA and self.kline_delay > 0:
-            self._delayed.append((time.monotonic() + self.kline_delay, record))
-        else:
-            self._out += record
+        # Служебная запись адаптера: длина — один байт, длинное эхо (запрос на 84 адреса)
+        # отдаём несколькими записями, их собирает SSM
+        chunks = [data[i : i + 254] for i in range(0, len(data), 254)] or [b""]
+        for chunk in chunks:
+            body = bytes([status]) + chunk
+            record = b"ar" + str(op2.ISO9141).encode() + bytes([len(body)]) + body
+            if status == op2.KLINE_DATA and self.kline_delay > 0:
+                self._delayed.append((time.monotonic() + self.kline_delay, record))
+            else:
+                self._out += record
 
     def _frame(self, proto: int, status: int, data: bytes) -> None:
         stamp = int((time.monotonic() - self._start) * 1e6) & 0xFFFFFFFF

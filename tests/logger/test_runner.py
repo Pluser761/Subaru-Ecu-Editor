@@ -47,3 +47,26 @@ def test_single_misses_are_tolerated() -> None:
 def test_consecutive_misses_stop() -> None:
     _samples, errors = _run([True] + [False] * MAX_MISSES)
     assert len(errors) == 1
+
+
+def test_call_runs_in_poll_thread() -> None:
+    """Чтение/сброс DTC из GUI идёт в потоке опроса, а не в потоке интерфейса."""
+    poller: Any = FlakyPoller([True] * 50)
+    runner = LoggerRunner(poller, lambda s: None, lambda e: None, min_period=0)
+    runner.start()
+    threads: list[str] = []
+    done = threading.Event()
+    try:
+        runner.call(lambda: threading.current_thread().name, lambda name: (threads.append(name), done.set()))
+        assert done.wait(2)
+    finally:
+        runner.stop()
+    assert threads == ["logger-poll"]
+
+
+def test_call_without_loop_runs_immediately() -> None:
+    poller: Any = FlakyPoller([True])
+    runner = LoggerRunner(poller, lambda s: None, lambda e: None, min_period=0)
+    results: list[int] = []
+    runner.call(lambda: 42, results.append)
+    assert results == [42]

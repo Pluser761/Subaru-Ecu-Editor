@@ -5,7 +5,9 @@
   тестер 0xF0, сумма — младший байт суммы всех байт до неё; init `BF` → `FF`;
 - CAN: сообщение `<команда> <данные…>` на 0x7E0, ответ с 0x7E8; init `AA` → `EA`,
   отказ ЭБУ — `7F <команда> <код>`;
-- чтение адресов одинаковое: `A8 00 <адрес:3>…` → `E8 <байт>…`, по байту на адрес.
+- чтение адресов одинаковое: `A8 00 <адрес:3>…` → `E8 <байт>…`, по байту на адрес;
+- запись байта по адресу: `B8 <адрес:3> <значение>` → `F8 <значение>` (по CAN — без
+  заполнителя; на K-line — `B8 <адрес:3> <значение>`).
 
 ID ЭБУ — байты 3–7 данных ответа на init (RomRaider SSMEcuInit); по нему logger def
 выбирает адреса extended-параметров. С байта 8 идут биты возможностей: параметр
@@ -26,11 +28,17 @@ TESTER_ADDRESS = 0xF0
 
 READ_ADDRESS = 0xA8
 READ_ADDRESS_RESPONSE = 0xE8
+WRITE_ADDRESS = 0xB8
+WRITE_ADDRESS_RESPONSE = 0xF8
 KLINE_INIT = 0xBF
 KLINE_INIT_RESPONSE = 0xFF
 CAN_INIT = 0xAA
 CAN_INIT_RESPONSE = 0xEA
 NEGATIVE_RESPONSE = 0x7F
+
+# RomRaider «Reset ECU»: запись 0x40 по адресу 0x000060 (стирает DTC и обученные значения)
+ECU_RESET_ADDRESS = 0x000060
+ECU_RESET_CODE = 0x40
 
 # Длина пакета K-line — один байт: команда + заполнитель + 3 байта на адрес ≤ 255
 KLINE_MAX_ADDRESSES = 84
@@ -139,6 +147,21 @@ class SsmClient:
                 raise SsmError(f"SSM: asked {len(chunk)} addresses, got {len(data)} bytes")
             out += data
         return bytes(out)
+
+    def write_address(self, address: int, value: int) -> None:
+        """Записать байт по адресу SSM (`B8` → `F8`); ответ ЭБУ должен повторить значение."""
+        data = address.to_bytes(3, "big") + bytes([value & 0xFF])
+        if self.link.name == "can":
+            reply = self._request_can(bytes([WRITE_ADDRESS]) + data, WRITE_ADDRESS_RESPONSE)
+        else:
+            reply = self._request_kline(WRITE_ADDRESS, data, WRITE_ADDRESS_RESPONSE)
+        if not reply or reply[0] != value & 0xFF:
+            raise SsmError(f"SSM: write {address:06x} returned {reply.hex(' ') or 'nothing'}")
+
+    def reset_ecu(self) -> None:
+        """RomRaider «Reset ECU»: запись 0x40 по 0x000060. Стирает DTC, обученные значения
+        и мониторы готовности; после него ЭБУ инициализируют заново (`init`)."""
+        self.write_address(ECU_RESET_ADDRESS, ECU_RESET_CODE)
 
     # --- Чтение без ожидания (K-line рядом с быстрым CAN) ---
 

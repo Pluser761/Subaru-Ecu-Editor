@@ -131,6 +131,11 @@ class OpenPort2:
         reply = self.command("atr", pin)
         return int(reply.args[1]) / 1000
 
+    def note(self, text: str) -> None:
+        """Запись в журнал обмена без байт (событие: сброс ЭБУ, переподключение)."""
+        if self._trace is not None:
+            self._trace.note(text)
+
     def open_channel(self, protocol: int, flags: int, baud: int, channel: int) -> None:
         self.command(f"ato{protocol}", flags, baud, channel)
         self._frames.setdefault(protocol, deque())

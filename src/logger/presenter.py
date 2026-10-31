@@ -21,11 +21,11 @@ from src.logger.core.params import decimals
 from src.logger.core.paths import default_logs_root, rom_log_dir
 from src.logger.core.profile import ProfileItem, list_profiles, load_profile, save_profile
 from src.logger.core.runner import LoggerRunner
-from src.logger.core.session import Connection, Poller, Sample, connect
+from src.logger.core.session import Connection, DtcReading, Poller, Sample, connect
 from src.logger.core.trace import Trace
 from src.logger.core.transport.emulator import FakeEcu, FakeOpenPort, demo_memory
 from src.logger.core.transport.op2 import NO_REPLY, ByteStream, OpenPort2, OpenPortError
-from src.logger.ui.window import LiveRow, LoggerWindow, ParamRow
+from src.logger.ui.window import DtcRow, LiveRow, LoggerWindow, ParamRow
 
 ROOT = Path(__file__).resolve().parents[2]
 LOGGER_DEFS = ROOT / "definitions" / "logger" / "logger_defs.xml"
@@ -76,6 +76,9 @@ class _Bridge(QObject):
 
     sample = pyqtSignal(object)
     error = pyqtSignal(object)
+    dtc_read = pyqtSignal(object)
+    dtc_cleared = pyqtSignal(object)
+    dtc_error = pyqtSignal(object)
 
 
 class LoggerPresenter:
@@ -107,9 +110,14 @@ class LoggerPresenter:
         self._latest: Sample | None = None
         self._min: dict[str, float] = {}
         self._max: dict[str, float] = {}
+        self._dtc_token: object | None = None  # текущее чтение/сброс кодов
+        self._dtc_read_done = False  # коды прочитаны — сброс разрешён
         self._bridge = _Bridge()
         self._bridge.sample.connect(self._on_sample)
         self._bridge.error.connect(self._on_error)
+        self._bridge.dtc_read.connect(self._on_dtc_read)
+        self._bridge.dtc_cleared.connect(self._on_dtc_cleared)
+        self._bridge.dtc_error.connect(self._on_dtc_error)
         self._timer = QTimer()
         self._timer.setInterval(1000 // UI_HZ)
         self._timer.timeout.connect(self._refresh)
@@ -126,6 +134,8 @@ class LoggerPresenter:
         w.open_profile_requested.connect(self._open_profile)
         w.save_profile_requested.connect(self._save_profile)
         w.choose_folder_requested.connect(self._choose_folder)
+        w.dtc_read_requested.connect(self.read_dtc)
+        w.dtc_clear_requested.connect(self.clear_dtc)
         w.closed.connect(self.disconnect)
         self.refresh_ports()
         self._fill_tree(set())
@@ -176,6 +186,8 @@ class LoggerPresenter:
 
     def disconnect(self) -> None:
         self._timer.stop()
+        self._dtc_token = None  # ответы на чтение/сброс, пришедшие позже, игнорируются
+        self._dtc_read_done = False
         if self.runner is not None:
             path = self.runner.stop_recording()
             self.runner.stop()
@@ -303,6 +315,79 @@ class LoggerPresenter:
         if self.runner is not None:
             self.runner.mark()
 
+    # --- Ошибки (DTC) ---
+
+    def read_dtc(self) -> None:
+        """Прочитать коды: в потоке опроса, результат — сигналом в GUI."""
+        runner = self.runner
+        if runner is None or self._dtc_token is not None:
+            return
+        token = object()
+        self._dtc_token = token
+        self.window.set_dtc_busy(True, tr("Чтение кодов…"))
+        runner.call(
+            runner.poller.read_dtc,
+            lambda rows: self._bridge.dtc_read.emit((token, rows)),
+            lambda exc: self._bridge.dtc_error.emit((token, "read", exc)),
+        )
+
+    def clear_dtc(self) -> None:
+        """Сброс памяти ошибок — только после чтения и подтверждения пользователя."""
+        runner = self.runner
+        if runner is None or self._dtc_token is not None:
+            return
+        if not self._dtc_read_done:
+            self.window.set_dtc_error(tr("Сначала прочитайте коды"))
+            return
+        if runner.recording is not None:
+            self.window.set_dtc_error(tr("Пока пишется лог, сброс недоступен — остановите запись"))
+            return
+        if not self.window.ask_clear_dtc():
+            return
+        token = object()
+        self._dtc_token = token
+        self.window.set_dtc_busy(True, tr("Сброс ошибок…"))
+        runner.call(
+            runner.poller.clear_dtc,
+            lambda rows: self._bridge.dtc_cleared.emit((token, rows)),
+            lambda exc: self._bridge.dtc_error.emit((token, "clear", exc)),
+        )
+
+    def _on_dtc_read(self, payload: tuple[object, list[DtcReading]]) -> None:
+        token, readings = payload
+        if token is not self._dtc_token:
+            return  # ответ на прежнее подключение/чтение
+        self._dtc_token = None
+        self._dtc_read_done = True
+        self.window.set_dtc_busy(False)
+        self.window.set_dtc_rows(_dtc_rows(readings))
+
+    def _on_dtc_cleared(self, payload: tuple[object, list[DtcReading]]) -> None:
+        token, readings = payload
+        if token is not self._dtc_token:
+            return
+        self._dtc_token = None
+        self._dtc_read_done = True  # после сброса коды прочитаны заново
+        self.window.set_dtc_busy(False)
+        self.window.set_dtc_rows(_dtc_rows(readings))
+        self.window.set_dtc_status(
+            tr("Ошибки сброшены (reset ЭБУ). Кодов после сброса: {n}", n=len(readings))
+        )
+
+    def _on_dtc_error(self, payload: tuple[object, str, Exception]) -> None:
+        token, action, error = payload
+        if token is not self._dtc_token:
+            return
+        self._dtc_token = None
+        self.window.set_dtc_busy(False)
+        if action == "clear":
+            # Сброс мог и пройти: старое содержимое памяти уже не достоверно
+            self._dtc_read_done = False
+            self.window.forget_dtc()
+            self.window.set_dtc_error(tr("Сброс не завершён: {error}", error=error))
+        else:
+            self.window.set_dtc_error(tr("Ошибки не прочитаны: {error}", error=error))
+
     # --- Запись ---
 
     def log_root(self) -> Path:
@@ -399,6 +484,10 @@ class LoggerPresenter:
         # График у нас — всё выбранное; в профиле RomRaider отмечаем так же
         items = [ProfileItem(pid, units, True) for pid, units in self.window.selected()]
         save_profile(path, items)
+
+
+def _dtc_rows(readings: list[DtcReading]) -> list[DtcRow]:
+    return [DtcRow(r.code.id, r.code.name, r.current, r.stored) for r in readings]
 
 
 def _tooltip(param: LoggerParam) -> str:
