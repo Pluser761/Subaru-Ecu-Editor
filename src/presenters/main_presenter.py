@@ -15,7 +15,7 @@ from src.presenters.ai_presenter import AiPresenter
 from src.core.parser import EcuParser
 from src.core.models import CalibrationTable, Checkpoint
 from src.core.session import RomSession
-from src.core.units import TableUnits, UnitSystem
+from src.core.units import Conversion, TableUnits, UnitSystem
 from src.core.transfer import check_compatibility, plan_transfer, render_report, save_report
 from src.core.xml_reader import EcuDefsRepository
 from src.logger.presenter import LoggerPresenter, RomInfo
@@ -453,10 +453,10 @@ class MainPresenter:
         stored = units.value_display(stored_def)
         editor.update_cell(map_id, row, col, stored)
         self._check_changed(map_id)
-        d = units.value.decimals if units.value else 2
-        note = "" if round(stored, d) == round(value, d) else " " + tr("(введено {value})", value=f"{value:.{d}f}")
+        d = _decimals(units.value)
+        note = "" if round(stored, d) == round(value, d) else " " + tr("(введено {value})", value=_fmt(value, d))
         self._window.set_status(
-            tr("Изменено [{map}] ({row}, {col}) = {value}", map=map_id, row=row, col=col, value=f"{stored:.{d}f}")
+            tr("Изменено [{map}] ({row}, {col}) = {value}", map=map_id, row=row, col=col, value=_fmt(stored, d))
             + note
         )
 
@@ -487,10 +487,9 @@ class MainPresenter:
         self._check_changed(map_id, *(name for name, _ in result.shared))
         shared = result.shared
         note = " — " + tr("ось общая, изменилась и у других таблиц: {n}", n=len(shared)) if shared else ""
-        conv = units.axis(axis)
-        d = conv.decimals if conv else 2
+        d = _decimals(units.axis(axis))
         self._window.set_status(
-            tr("Ось {axis} [{map}] {index} = {value}", axis=axis.upper(), map=map_id, index=index, value=f"{stored:.{d}f}")
+            tr("Ось {axis} [{map}] {index} = {value}", axis=axis.upper(), map=map_id, index=index, value=_fmt(stored, d))
             + note
         )
 
@@ -639,3 +638,13 @@ class MainPresenter:
 def _orientation(axis: str) -> Qt.Orientation:
     """Ось карты в ROM → ориентация: "x" — Horizontal, "y" — Vertical."""
     return Qt.Orientation.Horizontal if axis == "x" else Qt.Orientation.Vertical
+
+
+def _decimals(conv: Conversion | None) -> int:
+    """Знаков после точки на экране для величины; без пересчёта единиц — 2."""
+    return conv.decimals if conv is not None else 2
+
+
+def _fmt(value: float, decimals: int) -> str:
+    """Число в том виде, как в статусбаре (по знакам отображения величины)."""
+    return f"{value:.{decimals}f}"
