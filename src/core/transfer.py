@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -262,22 +263,12 @@ def _span(axis: np.ndarray) -> tuple[float, float] | None:
     return (float(axis[0]), float(axis[-1])) if len(axis) > 1 else None
 
 
-def apply_transfer(
-    source: EcuParser,
-    target: EcuParser,
-    names: list[str],
-    plan: TransferPlan | None = None,
-) -> TransferReport:
-    """Перенести выбранные таблицы B в rom_bytes A."""
-    reason = check_compatibility(source, target)
-    if reason:
-        raise ValueError(reason)
-    plan = plan or plan_transfer(source, target)
-    by_name = {c.name: c for c in plan.candidates}
-    target_tables = target.definition.tables if target.definition else {}
-
-    results: dict[str, TableResult] = {}
+def _select_transfers(
+    names: list[str], by_name: dict[str, TransferCandidate]
+) -> tuple[list[str], dict[str, TableResult]]:
+    """Разделить запрошенные имена: переносимые и пропущенные (с причиной)."""
     selected: list[str] = []
+    results: dict[str, TableResult] = {}
     for name in names:
         candidate = by_name.get(name)
         if candidate is None:
@@ -292,19 +283,17 @@ def apply_transfer(
             )
         else:
             selected.append(name)
+    return selected, results
 
-    source_grids = {name: _read_grid(source, name) for name in selected}
-    users = target.axis_users()
-    before: dict[str, _Grid] = {}
 
-    def snapshot(name: str) -> None:
-        if name not in before:
-            before[name] = _read_grid(target, name)
-
-    for name in selected:
-        snapshot(name)
-
-    # 1. Желаемые оси A. Общую ось задаёт первая выбранная таблица.
+def _desired_axes(
+    selected: list[str],
+    by_name: dict[str, TransferCandidate],
+    target_tables: dict[str, TableDef],
+    source_grids: dict[str, _Grid],
+) -> tuple[dict[int, tuple[AxisDef, np.ndarray, str]], dict[str, list[str]]]:
+    """Желаемые оси A; общую ось задаёт первая выбранная таблица. Вторым — примечания о
+    конфликтах общей оси (значения интерполируются на чужую ось)."""
     desired: dict[int, tuple[AxisDef, np.ndarray, str]] = {}
     notes: dict[str, list[str]] = defaultdict(list)
     for name in selected:
@@ -332,8 +321,17 @@ def apply_transfer(
                     )
                 continue
             desired[address] = (axis_def, want, name)
+    return desired, notes
 
-    # 2. Пишем оси; запоминаем, какие реально изменились (для пересчёта соседей)
+
+def _write_axes(
+    desired: dict[int, tuple[AxisDef, np.ndarray, str]],
+    target: EcuParser,
+    users: dict[int, list[str]],
+    source_grids: dict[str, _Grid],
+    snapshot: Callable[[str], None],
+) -> list[str]:
+    """Записать оси; вернуть таблицы-соседи по изменившимся осям для пересчёта."""
     changed_axes: set[int] = set()
     for address, (axis_def, want, _owner) in desired.items():
         for sibling in users.get(address, []):
@@ -349,10 +347,21 @@ def apply_transfer(
         for sibling in users.get(address, [])
         if sibling not in source_grids
     ]
-    recalculated = list(dict.fromkeys(recalculated))  # без повторов, порядок сохраняем
+    return list(dict.fromkeys(recalculated))  # без повторов, порядок сохраняем
 
-    # 3. Значения: выбранные — из B, соседи по общей оси — из своих старых значений
-    for name in selected + recalculated:
+
+def _transfer_values(
+    names: list[str],
+    by_name: dict[str, TransferCandidate],
+    target_tables: dict[str, TableDef],
+    source_grids: dict[str, _Grid],
+    before: dict[str, _Grid],
+    target: EcuParser,
+    results: dict[str, TableResult],
+    notes: dict[str, list[str]],
+) -> None:
+    """Значения выбранных таблиц — из B; соседей по общей оси — из их старых значений."""
+    for name in names:
         t_def = target_tables[name]
         rows, cols = table_dimensions(t_def)
         after_axes = _read_grid(target, name)
@@ -410,6 +419,38 @@ def apply_transfer(
                 None,
                 [tr("общая ось переписана при переносе")] + extra,
             )
+
+
+def apply_transfer(
+    source: EcuParser,
+    target: EcuParser,
+    names: list[str],
+    plan: TransferPlan | None = None,
+) -> TransferReport:
+    """Перенести выбранные таблицы B в rom_bytes A."""
+    reason = check_compatibility(source, target)
+    if reason:
+        raise ValueError(reason)
+    plan = plan or plan_transfer(source, target)
+    by_name = {c.name: c for c in plan.candidates}
+    target_tables = target.definition.tables if target.definition else {}
+
+    selected, results = _select_transfers(names, by_name)
+
+    source_grids = {name: _read_grid(source, name) for name in selected}
+    users = target.axis_users()
+    before: dict[str, _Grid] = {}
+
+    def snapshot(name: str) -> None:
+        if name not in before:
+            before[name] = _read_grid(target, name)
+
+    for name in selected:
+        snapshot(name)
+
+    desired, notes = _desired_axes(selected, by_name, target_tables, source_grids)
+    recalculated = _write_axes(desired, target, users, source_grids, snapshot)
+    _transfer_values(selected + recalculated, by_name, target_tables, source_grids, before, target, results, notes)
 
     ordered = [results[n] for n in names if n in results] + [
         results[n] for n in recalculated if n in results and n not in names
