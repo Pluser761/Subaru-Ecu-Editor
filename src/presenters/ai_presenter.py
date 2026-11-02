@@ -16,6 +16,7 @@ from PyQt6.QtCore import QObject, Qt, pyqtSignal
 from src.ai.notes import NotesStore
 from src.ai.server import DEFAULT_PORT, ServerThread
 from src.ai.tools import EditProposal
+from src.core.models import Axis
 from src.core.session import RomSession
 from src.core.units import TableUnits
 from src.i18n import tr
@@ -156,7 +157,7 @@ class AiPresenter(QObject):
             new[cell.row][cell.col] = cell.new
         x_new, y_new = list(table.x_axis), list(table.y_axis)
         for point in proposal.axes:
-            (x_new if point.axis == "x" else y_new)[point.index] = point.new
+            (x_new if point.axis is Axis.X else y_new)[point.index] = point.new
         return EditPreview(
             name=proposal.name,
             reason=proposal.reason,
@@ -165,9 +166,9 @@ class AiPresenter(QObject):
             new=[[units.value_display(v) for v in row] for row in new],
             decimals=shown.decimals,
             x_old=shown.x_axis,
-            x_new=[units.axis_display("x", v) for v in x_new],
+            x_new=[units.axis_display(Axis.X, v) for v in x_new],
             y_old=shown.y_axis,
-            y_new=[units.axis_display("y", v) for v in y_new],
+            y_new=[units.axis_display(Axis.Y, v) for v in y_new],
             x_labels=shown.x_labels,
             y_labels=shown.y_labels,
             x_title=shown.x_title,

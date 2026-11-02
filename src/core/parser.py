@@ -7,7 +7,7 @@ from pathlib import Path
 from src.i18n import tr
 from src.core.checksum import TABLE_NAME as CHECKSUM_TABLE
 from src.core.ecu_lookup import has_denso_lookup
-from src.core.models import AxisDef, CalibrationTable, MapInfo, RomDefinition, SwitchInfo, TableDef
+from src.core.models import Axis, AxisDef, CalibrationTable, MapInfo, RomDefinition, SwitchInfo, TableDef
 from src.core.rom_io import (
     axis_title,
     is_writable_axis,
@@ -179,25 +179,25 @@ class EcuParser:
             self._axis_users = dict(users)
         return self._axis_users
 
-    def shared_axis_tables(self, map_id: str, axis: str) -> list[str]:
-        """Другие таблицы на той же оси в ROM (axis: "x" или "y"); пусто — ось не общая."""
+    def shared_axis_tables(self, map_id: str, axis: Axis) -> list[str]:
+        """Другие таблицы на той же оси в ROM; пусто — ось не общая."""
         return [name for name, _ in self.shared_axis_users(map_id, axis)]
 
-    def shared_axis_users(self, map_id: str, axis: str) -> list[tuple[str, str]]:
-        """Другие таблицы на той же оси в ROM и какая это ось у них: [(имя, "x" | "y")].
+    def shared_axis_users(self, map_id: str, axis: Axis) -> list[tuple[str, Axis]]:
+        """Другие таблицы на той же оси в ROM и какая это ось у них: [(имя, Axis)].
         Одна ось бывает X у одних таблиц и Y у других (ECT: Y у 2D, X у 3D)."""
         table = self.get_table_def(map_id)
-        axis_def = table.x_axis if axis == "x" else table.y_axis
+        axis_def = table.axis_def(axis)
         if not is_writable_axis(axis_def):
             return []
         assert axis_def is not None and axis_def.storageaddress is not None
         address = axis_def.storageaddress
-        users: list[tuple[str, str]] = []
+        users: list[tuple[str, Axis]] = []
         for name in self.axis_users().get(address, []):
             if name == map_id:
                 continue
             other = self.get_table_def(name)
-            kind = "x" if other.x_axis is not None and other.x_axis.storageaddress == address else "y"
+            kind = Axis.X if other.x_axis is not None and other.x_axis.storageaddress == address else Axis.Y
             users.append((name, kind))
         return users
 
@@ -214,21 +214,19 @@ class EcuParser:
         table = self.get_table_def(map_id)
         return write_table_cell(self.rom_bytes, table, row, col, value)
 
-    def write_axis(self, map_id: str, axis: str, index: int, value: float) -> float:
-        """axis: "x" или "y". Вернуть реально сохранённое значение."""
+    def write_axis(self, map_id: str, axis: Axis, index: int, value: float) -> float:
+        """Вернуть реально сохранённое значение точки оси."""
         table = self.get_table_def(map_id)
-        axis_def = table.x_axis if axis == "x" else table.y_axis
-        return write_axis_value(self.rom_bytes, axis_def, index, value)
+        return write_axis_value(self.rom_bytes, table.axis_def(axis), index, value)
 
     def read_cell(self, map_id: str, row: int, col: int) -> float:
         return read_table_matrix(self.rom_bytes, self.get_table_def(map_id))[row][col]
 
-    def read_axis(self, map_id: str, axis: str, index: int) -> float:
+    def read_axis(self, map_id: str, axis: Axis, index: int) -> float:
         table = self.get_table_def(map_id)
         rows, cols = table_dimensions(table)
-        if axis == "x":
-            return read_axis_values(self.rom_bytes, table.x_axis, cols)[index]
-        return read_axis_values(self.rom_bytes, table.y_axis, rows)[index]
+        count = cols if axis is Axis.X else rows
+        return read_axis_values(self.rom_bytes, table.axis_def(axis), count)[index]
 
     def load_table(self, map_id: str) -> CalibrationTable:
         table = self.get_table_def(map_id)
@@ -250,8 +248,8 @@ class EcuParser:
             y_labels=read_axis_labels(table.y_axis, rows),
             x_title=axis_title(table.x_axis) if cols > 1 else "",
             y_title=axis_title(table.y_axis) if rows > 1 else "",
-            x_shared_with=self.shared_axis_tables(map_id, "x") if cols > 1 else [],
-            y_shared_with=self.shared_axis_tables(map_id, "y") if rows > 1 else [],
+            x_shared_with=self.shared_axis_tables(map_id, Axis.X) if cols > 1 else [],
+            y_shared_with=self.shared_axis_tables(map_id, Axis.Y) if rows > 1 else [],
             unit=unit,
             fine_increment=scaling.fine_increment if scaling else None,
             coarse_increment=scaling.coarse_increment if scaling else None,

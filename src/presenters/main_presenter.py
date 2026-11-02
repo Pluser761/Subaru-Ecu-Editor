@@ -5,7 +5,7 @@ import sys
 
 from pathlib import Path
 
-from PyQt6.QtCore import QProcess, Qt, QTimer
+from PyQt6.QtCore import QProcess, QTimer
 
 from src.ai.notes import NoteKey, NotesStore
 from src.ai.server import DEFAULT_PORT
@@ -13,7 +13,7 @@ from src.ai.tools import EditProposal
 from src.i18n import Language, tr
 from src.presenters.ai_presenter import AiPresenter
 from src.core.parser import EcuParser
-from src.core.models import CalibrationTable, Checkpoint
+from src.core.models import Axis, CalibrationTable, Checkpoint
 from src.core.session import RomSession
 from src.core.units import Conversion, TableUnits, UnitSystem
 from src.core.transfer import check_compatibility, plan_transfer, render_report, save_report
@@ -21,6 +21,7 @@ from src.core.xml_reader import EcuDefsRepository
 from src.logger.presenter import LoggerPresenter, RomInfo
 from src.logger.ui.window import LoggerWindow
 from src.ui.app_settings import AppSettings
+from src.ui.axes import axis_orientation
 from src.ui.main_window import MainWindow
 from src.ui.map.cells import describe_shape
 from src.ui.map.window import MapWindow
@@ -461,35 +462,35 @@ class MainPresenter:
         )
 
     def on_x_axis_changed(self, map_id: str, col: int, value: float) -> None:
-        self._on_axis_changed(map_id, "x", col, value)
+        self._on_axis_changed(map_id, Axis.X, col, value)
 
     def on_y_axis_changed(self, map_id: str, row: int, value: float) -> None:
-        self._on_axis_changed(map_id, "y", row, value)
+        self._on_axis_changed(map_id, Axis.Y, row, value)
 
-    def _on_axis_changed(self, map_id: str, axis: str, index: int, value: float) -> None:
+    def _on_axis_changed(self, map_id: str, axis: Axis, index: int, value: float) -> None:
         editor = self._window.editor_view
         units = self._units(map_id)
         try:
             result = self._session.write_axis(map_id, axis, index, units.axis_definition(axis, value))
         except Exception as exc:  # noqa: BLE001
             self._window.set_error(
-                tr("Не удалось записать ось {axis}[{index}]: {error}", axis=axis.upper(), index=index, error=exc)
+                tr("Не удалось записать ось {axis}[{index}]: {error}", axis=axis.name, index=index, error=exc)
             )
             current = units.axis_display(axis, self._parser.read_axis(map_id, axis, index))
-            editor.update_axis(map_id, _orientation(axis), index, current)
+            editor.update_axis(map_id, axis_orientation(axis), index, current)
             return
         stored = units.axis_display(axis, result.stored)
-        editor.update_axis(map_id, _orientation(axis), index, stored)
+        editor.update_axis(map_id, axis_orientation(axis), index, stored)
         # Открытые окна карт на той же оси показывают её новое значение (у них это может быть
         # другая ось: X вместо Y) — в своих единицах
         for name, kind in result.shared:
-            editor.update_axis(name, _orientation(kind), index, self._units(name).axis_display(kind, result.stored))
+            editor.update_axis(name, axis_orientation(kind), index, self._units(name).axis_display(kind, result.stored))
         self._check_changed(map_id, *(name for name, _ in result.shared))
         shared = result.shared
         note = " — " + tr("ось общая, изменилась и у других таблиц: {n}", n=len(shared)) if shared else ""
         d = _decimals(units.axis(axis))
         self._window.set_status(
-            tr("Ось {axis} [{map}] {index} = {value}", axis=axis.upper(), map=map_id, index=index, value=_fmt(stored, d))
+            tr("Ось {axis} [{map}] {index} = {value}", axis=axis.name, map=map_id, index=index, value=_fmt(stored, d))
             + note
         )
 
@@ -633,11 +634,6 @@ class MainPresenter:
 
     def on_operation_info(self, message: str) -> None:
         self._window.set_status(message)
-
-
-def _orientation(axis: str) -> Qt.Orientation:
-    """Ось карты в ROM → ориентация: "x" — Horizontal, "y" — Vertical."""
-    return Qt.Orientation.Horizontal if axis == "x" else Qt.Orientation.Vertical
 
 
 def _decimals(conv: Conversion | None) -> int:

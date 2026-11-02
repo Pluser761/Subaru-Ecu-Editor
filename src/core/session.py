@@ -16,7 +16,7 @@ import numpy as np
 from src.i18n import tr
 from src.core import checksum
 from src.core.checkpoint import same_values, table_differs
-from src.core.models import CalibrationTable, Checkpoint
+from src.core.models import Axis, CalibrationTable, Checkpoint
 from src.core.parser import EcuParser
 from src.core.rom_io import is_writable_axis, write_axis_values, write_table_values
 from src.core.transfer import TransferPlan, TransferReport, apply_transfer
@@ -28,7 +28,7 @@ class AxisWrite:
     (у них это может быть другая ось: X вместо Y)."""
 
     stored: float
-    shared: list[tuple[str, str]]  # (map_id, "x" | "y")
+    shared: list[tuple[str, Axis]]  # (map_id, ось у соседа: X или Y)
 
 
 class RomSession:
@@ -114,7 +114,7 @@ class RomSession:
         self.dirty = True
         return stored
 
-    def write_axis(self, map_id: str, axis: str, index: int, value: float) -> AxisWrite:
+    def write_axis(self, map_id: str, axis: Axis, index: int, value: float) -> AxisWrite:
         """Записать точку оси. Общая ось меняется и у других таблиц — их checkpoint снимается
         до записи, иначе при первом открытии они примут новую ось за исходную."""
         shared = self.parser.shared_axis_users(map_id, axis)
@@ -142,8 +142,8 @@ class RomSession:
             table = self.parser.get_table_def(map_id)
             current = self.load_table(map_id)
             for axis, axis_def, base, now in (
-                ("x", table.x_axis, checkpoint.x_axis, current.x_axis),
-                ("y", table.y_axis, checkpoint.y_axis, current.y_axis),
+                (Axis.X, table.x_axis, checkpoint.x_axis, current.x_axis),
+                (Axis.Y, table.y_axis, checkpoint.y_axis, current.y_axis),
             ):
                 if not is_writable_axis(axis_def) or len(base) != len(now) or same_values(base, now):
                     continue

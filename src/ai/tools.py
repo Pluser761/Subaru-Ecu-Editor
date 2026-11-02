@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from src.core.models import CalibrationTable
+from src.core.models import Axis, CalibrationTable
 from src.core.parser import EcuParser
 from src.core.rom_io import write_axis_value, write_table_cell
 from src.core.session import RomSession
@@ -89,17 +89,17 @@ def list_maps(session: RomSession, category: str | None = None, query: str | Non
     return result
 
 
-def _axis(table: CalibrationTable, axis: str) -> dict[str, Any] | None:
-    values = table.x_axis if axis == "x" else table.y_axis
-    labels = table.x_labels if axis == "x" else table.y_labels
+def _axis(table: CalibrationTable, axis: Axis) -> dict[str, Any] | None:
+    values = table.axis_values(axis)
+    labels = table.axis_labels(axis)
     if not values and not labels:
         return None
     return {
-        "title": table.x_title if axis == "x" else table.y_title,
+        "title": table.axis_title(axis),
         "values": [_round(v) for v in values],
         "labels": labels,  # статическая ось: подписи вместо чисел, не редактируется
         "editable": labels is None,
-        "shared_with": [n.strip() for n in (table.x_shared_with if axis == "x" else table.y_shared_with)],
+        "shared_with": [n.strip() for n in table.axis_shared_with(axis)],
     }
 
 
@@ -115,8 +115,8 @@ def describe_table(table: CalibrationTable) -> dict[str, Any]:
         "source": table.source or "ecu_defs.xml",
         "shape": f"{len(table.values)}x{len(table.values[0]) if table.values else 0}",
         "layout": "values[row][col]; row follows y_axis, col follows x_axis",
-        "x_axis": _axis(table, "x"),
-        "y_axis": _axis(table, "y"),
+        "x_axis": _axis(table, Axis.X),
+        "y_axis": _axis(table, Axis.Y),
         "values": [[_round(v) for v in row] for row in table.values],
         "step": table.fine_increment,
     }
@@ -157,7 +157,7 @@ class CellChange:
 
 @dataclass(frozen=True)
 class AxisPointChange:
-    axis: str  # "x" | "y"
+    axis: Axis  # X | Y
     index: int
     old: float
     new: float
@@ -175,7 +175,7 @@ class EditProposal:
     cells: list[CellChange] = field(default_factory=list)
     axes: list[AxisPointChange] = field(default_factory=list)
     # Другие таблицы на изменяемой общей оси: (имя, их ось)
-    shared: list[tuple[str, str]] = field(default_factory=list)
+    shared: list[tuple[str, Axis]] = field(default_factory=list)
 
     @property
     def name(self) -> str:
@@ -237,19 +237,19 @@ def plan_edit(
         if stored != old:
             proposal.cells.append(CellChange(r, c, old, stored, requested))
 
-    for axis, new_axis in (("x", x_axis), ("y", y_axis)):
+    for axis, new_axis in ((Axis.X, x_axis), (Axis.Y, y_axis)):
         if new_axis is None:
             continue
-        current = table.x_axis if axis == "x" else table.y_axis
-        labels = table.x_labels if axis == "x" else table.y_labels
+        current = table.axis_values(axis)
+        labels = table.axis_labels(axis)
         if labels is not None or not current:
-            raise ToolError(f"{axis.upper()} axis is static or absent and cannot be edited")
+            raise ToolError(f"{axis.name} axis is static or absent and cannot be edited")
         if len(new_axis) != len(current):
-            raise ToolError(f"{axis}_axis must have {len(current)} points")
+            raise ToolError(f"{axis.value}_axis must have {len(current)} points")
         changed = False
-        axis_def = table_def.x_axis if axis == "x" else table_def.y_axis
+        axis_def = table_def.axis_def(axis)
         for i, v in enumerate(new_axis):
-            requested = _number(v, f"{axis}_axis[{i}]")
+            requested = _number(v, f"{axis.value}_axis[{i}]")
             if abs(requested - current[i]) < _SAME:
                 continue
             stored = write_axis_value(rom, axis_def, i, requested)
@@ -276,7 +276,7 @@ def apply_edit(session: RomSession, proposal: EditProposal) -> dict[str, Any]:
     axes = []
     for point in proposal.axes:
         stored = session.write_axis(proposal.map_id, point.axis, point.index, point.new).stored
-        axes.append({"axis": point.axis, "index": point.index, "requested": _round(point.requested), "stored": _round(stored)})
+        axes.append({"axis": point.axis.value, "index": point.index, "requested": _round(point.requested), "stored": _round(stored)})
     for cell in proposal.cells:
         session.write_cell(proposal.map_id, cell.row, cell.col, cell.new)
     # Где ROM хранит не то, что просили (шаг типа данных, граница диапазона) — самые большие

@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+from enum import Enum
+
 from pydantic import BaseModel, Field
+
+
+class Axis(Enum):
+    """Ось карты: X — столбцы (col), Y — строки (row). Значение — краткое имя для JSON/текстов."""
+
+    X = "x"
+    Y = "y"
 
 
 class CalibrationTable(BaseModel):
@@ -55,6 +64,26 @@ class CalibrationTable(BaseModel):
     def cols(self) -> int:
         return len(self.values[0]) if self.values else 0
 
+    # --- Оси: X (столбцы) и Y (строки) ---
+
+    def axis_values(self, axis: Axis) -> list[float]:
+        return self.x_axis if axis is Axis.X else self.y_axis
+
+    def axis_labels(self, axis: Axis) -> list[str] | None:
+        return self.x_labels if axis is Axis.X else self.y_labels
+
+    def axis_title(self, axis: Axis) -> str:
+        return self.x_title if axis is Axis.X else self.y_title
+
+    def axis_shared_with(self, axis: Axis) -> list[str]:
+        return self.x_shared_with if axis is Axis.X else self.y_shared_with
+
+    def axis_increments(self, axis: Axis) -> tuple[float | None, float | None] | None:
+        return self.x_increments if axis is Axis.X else self.y_increments
+
+    def axis_decimals(self, axis: Axis) -> int:
+        return self.x_decimals if axis is Axis.X else self.y_decimals
+
 
 class SwitchInfo(BaseModel):
     """Переключатель (таблица Switch): ошибка DTC, исправление ECU и т.п."""
@@ -76,6 +105,9 @@ class Checkpoint(BaseModel):
     values: list[list[float]]
     x_axis: list[float] = Field(default_factory=list)
     y_axis: list[float] = Field(default_factory=list)
+
+    def axis_values(self, axis: Axis) -> list[float]:
+        return self.x_axis if axis is Axis.X else self.y_axis
 
 
 class MapInfo(BaseModel):
@@ -132,6 +164,10 @@ class TableDef(BaseModel):
     states: dict[str, str] = Field(default_factory=dict)
     # Файл дополнения, из которого взята таблица; пусто — основной ecu_defs.xml
     source: str = ""
+
+    def axis_def(self, axis: Axis) -> AxisDef | None:
+        """Определение оси X или Y (для чтения/записи из ROM)."""
+        return self.x_axis if axis is Axis.X else self.y_axis
 
 
 class RomId(BaseModel):
