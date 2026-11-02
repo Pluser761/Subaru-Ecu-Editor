@@ -5,6 +5,10 @@ K-line. Если по CAN ЭБУ отказывает на части адрес
 пополам и переезжают на K-line (открывается при первой нужде), остальное остаётся на CAN. K-line опрашивается
 без ожидания между опросами CAN: CAN идёт на своей скорости (~50 опросов/с на машине),
 параметры K-line обновляются реже (~5–8 раз/с) и показывают последнее значение — они в `slow`.
+
+Коды неисправностей (DTC) читаются тем же каналом по адресам из logger def (tmp — активна
+сейчас, mem — сохранена). Сброс — RomRaider «Reset ECU» (запись 0x40 по 0x000060): после него
+Poller делает init заново и читает коды повторно; кэши отказов по адресам сбрасываются.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
-from src.logger.core.defs import LoggerDefs, LoggerParam
+from src.logger.core.defs import DtcCode, LoggerDefs, LoggerParam
 from src.logger.core.params import byte_addresses, calculate, convert_all
 from src.logger.core.ssm import EcuInit, SsmClient, SsmError
 from src.logger.core.transport.links import CanLink, KLineLink
@@ -63,11 +67,27 @@ def _kline_opener(device: OpenPort2) -> Callable[[], SsmClient]:
     return open_kline
 
 
+# Значения колонки отметок
+MARK_USER = 1
+MARK_RESTORED = 2
+# Пауза после reset ЭБУ, с: он перезагружается, init может ответить не сразу
+DTC_RESET_PAUSE = 1.5
+
+
 @dataclass(frozen=True)
 class Sample:
     time_ms: float  # от начала опроса
     values: dict[str, float]  # id параметра → значение в выбранных единицах (nan — не прочитан)
-    mark: int = 0  # 1 — в этом опросе нажата отметка
+    mark: int = 0  # 1 — в этом опросе нажата отметка, 2 — первый опрос после обрыва связи
+
+
+@dataclass(frozen=True)
+class DtcReading:
+    """Код неисправности в памяти ЭБУ: current — активна сейчас (tmp), stored — сохранена (mem)."""
+
+    code: DtcCode
+    current: bool
+    stored: bool
 
 
 @dataclass
@@ -109,7 +129,56 @@ class Poller:
 
     def mark(self) -> None:
         """Отметка события (хлопок и т.п.): попадёт в ближайший опрос."""
-        self._mark = 1
+        self._mark = MARK_USER
+
+    def reconnect(self, connection: Connection) -> None:
+        """Продолжить на новом подключении после обрыва: выбор, план и время — прежние,
+        запасной K-line откроется заново; ближайший опрос получит отметку MARK_RESTORED."""
+        self.connection = connection
+        self._forget_fallback()
+        self._mark = MARK_RESTORED
+
+    # --- Коды неисправностей (DTC) ---
+
+    def read_dtc(self) -> list[DtcReading]:
+        """Прочитать коды из памяти ЭБУ: tmp — активна сейчас, mem — сохранена.
+
+        Как в RomRaider: бит tmp даёт «сейчас» (1), бит mem — «сохранена» (2), оба — 3;
+        пара байт 0xFF/0xFF означает, что адрес код не отдаёт, такие пропускаются.
+        """
+        codes = list(self.defs.dtcodes.values())
+        if not codes:
+            return []
+        raw = self._read_dtc(self._dtc_addresses())
+        readings: list[DtcReading] = []
+        for code in codes:
+            tmp, mem = raw.get(code.tmp_address), raw.get(code.mem_address)
+            if tmp is None or mem is None:
+                continue
+            if tmp == 0xFF and mem == 0xFF:
+                continue
+            mask = 1 << code.bit
+            current, stored = bool(tmp & mask), bool(mem & mask)
+            if current or stored:
+                readings.append(DtcReading(code, current, stored))
+        return readings
+
+    def clear_dtc(self, pause: float = DTC_RESET_PAUSE) -> list[DtcReading]:
+        """Сбросить память ошибок: RomRaider «Reset ECU» (0x40 по 0x000060), затем init
+        заново и повторное чтение. Забывает отказы по адресам: после перезапуска ЭБУ они
+        могут читаться снова."""
+        client = self.connection.client
+        client.reset_ecu()
+        self.connection.device.note("DTC cleared (ECU reset 0x40)")
+        if pause > 0:
+            time.sleep(pause)
+        self._forget_fallback()
+        self._bad_addresses.clear()
+        self.unsupported.clear()
+        self.slow.clear()
+        self.connection.init = client.init()
+        self._plan = self._build_plan()
+        return self.read_dtc()
 
     def poll(self) -> Sample:
         plan = self._plan
@@ -170,6 +239,56 @@ class Poller:
 
     # --- Чтение ---
 
+    def _forget_fallback(self) -> None:
+        """Закрыть и забыть запасной K-line и его последние значения (откроется заново)."""
+        fallback, self._fallback = self._fallback, None
+        if fallback is not None:
+            try:
+                fallback.link.close()
+            except Exception:  # noqa: BLE001 — после обрыва старый адаптер уже мог пропасть
+                pass
+        self._fallback_values.clear()
+        self._fallback_chunk = []
+        self._fallback_turn = -1
+
+    def _dtc_addresses(self) -> list[int]:
+        """Уникальные адреса байт DTC: tmp и mem всех кодов, в порядке definitions."""
+        addresses: list[int] = []
+        seen: set[int] = set()
+        for code in self.defs.dtcodes.values():
+            for address in (code.tmp_address, code.mem_address):
+                if address not in seen:
+                    seen.add(address)
+                    addresses.append(address)
+        return addresses
+
+    def _read_dtc(self, addresses: list[int]) -> dict[int, int]:
+        """Прочитать адреса DTC основным каналом; отказавшие — сразу по K-line.
+
+        В отличие от обычного опроса здесь нельзя показывать последнее значение K-line:
+        коды читаются по требованию, поэтому ждём ответ и без него сообщаем об ошибке.
+        """
+        out = self._read_isolating(self.connection.client, addresses)
+        # По K-line читаем все отказавшие адреса заново: последнее значение опроса могло
+        # быть получено до того, как код появился в памяти ЭБУ
+        bad = [a for a in addresses if a in self._bad_addresses]
+        if bad:
+            # Пересоздать K-line: у него мог висеть фоновый запрос опроса, ответ на
+            # который уже не отличить от ответа на чтение DTC
+            self._forget_fallback()
+            fallback = self._open_fallback()
+            if fallback is not None:
+                data = fallback.read_addresses(bad)
+                out.update(zip(bad, data))
+                self._fallback_values.update(zip(bad, data))
+            else:
+                for address in bad:
+                    out.pop(address, None)  # без K-line эти байты не прочитать
+        missing = [a for a in addresses if out.get(a) is None]
+        if missing:
+            raise SsmError("SSM: DTC addresses not read: " + ", ".join(f"{a:06x}" for a in missing))
+        return {a: value for a, value in out.items() if value is not None}
+
     def _read(self, addresses: list[int]) -> dict[int, int | None]:
         """Байты по адресам: основной канал — каждый опрос; отказавшие на нём адреса — через
         K-line без ожидания (последнее полученное значение, пока не пришло новое)."""
@@ -189,6 +308,8 @@ class Poller:
         """Прочитать; на отказ ЭБУ (код отказа) — делить пополам и найти виноватые адреса."""
         try:
             data = client.read_addresses(addresses)
+            # Адрес мог начать читаться (после перезапуска ЭБУ) — больше не отказ
+            self._bad_addresses.difference_update(addresses)
             return dict(zip(addresses, data))
         except SsmError as exc:
             if exc.code is None:

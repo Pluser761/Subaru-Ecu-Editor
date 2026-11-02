@@ -11,6 +11,9 @@ definitions/logger/extra/*.xml в той же схеме. Как и у карт,
   вычисляемые по другим параметрам (формулы вида `(P12*60)/P8`, `[P21:ms]`);
 - `ecuparam` (E…) — extended: адреса RAM свои у каждого ID ЭБУ;
 - `switch` (S…) — бит байта по адресу; поддержка — бит `bit` в байте `ecubyteindex`.
+
+Отдельно разбираются коды неисправностей (`<dtcodes>`): у каждого свой бит в байте
+tmp (активна сейчас) и mem (сохранена); читает и сбрасывает их Poller.
 """
 
 from __future__ import annotations
@@ -43,6 +46,19 @@ class Address:
     address: int
     length: int = 1
     bit: int | None = None
+
+
+@dataclass(frozen=True)
+class DtcCode:
+    """Код неисправности SSM: бит `bit` в байте tmp (активна сейчас) и mem (сохранена)."""
+
+    id: str
+    name: str
+    tmp_address: int
+    mem_address: int
+    bit: int
+    description: str = ""
+    source: str = ""  # файл дополнения; пусто — основной logger def
 
 
 @dataclass
@@ -145,11 +161,32 @@ def parse_protocol(protocol: ET.Element, source: str = "") -> list[LoggerParam]:
     return params
 
 
+def parse_dtcodes(protocol: ET.Element, source: str = "") -> list[DtcCode]:
+    """Коды неисправностей одного `<protocol id="SSM">` (блок `<dtcodes>`)."""
+    codes: list[DtcCode] = []
+    for el in protocol.iter("dtcode"):
+        tmp, mem, bit = _int(el.get("tmpaddr")), _int(el.get("memaddr")), _int(el.get("bit"))
+        if tmp is None or mem is None or bit is None:
+            log.warning("logger defs: dtcode без адреса или бита: %s", el.get("id"))
+            continue
+        codes.append(DtcCode(
+            id=el.get("id", ""),
+            name=el.get("name", ""),
+            tmp_address=tmp,
+            mem_address=mem,
+            bit=bit,
+            description=el.get("desc", ""),
+            source=source,
+        ))
+    return codes
+
+
 class LoggerDefs:
     """Параметры SSM: основной logger def + дополнения."""
 
     def __init__(self) -> None:
         self.params: dict[str, LoggerParam] = {}
+        self.dtcodes: dict[str, DtcCode] = {}  # id → код; порядок — как в definitions
         self.files: list[Path] = []
 
     @classmethod
@@ -177,6 +214,8 @@ class LoggerDefs:
         for protocol in protocols:
             for param in parse_protocol(protocol, source):
                 self._add(param)
+            for code in parse_dtcodes(protocol, source):
+                self._add_dtc(code)
         self.files.append(path)
 
     def _add(self, param: LoggerParam) -> None:
@@ -186,6 +225,10 @@ class LoggerDefs:
         elif existing.kind == "ecuparam" and param.kind == "ecuparam":
             for ecu_id, addresses in param.ecu_addresses.items():
                 existing.ecu_addresses.setdefault(ecu_id, addresses)
+
+    def _add_dtc(self, code: DtcCode) -> None:
+        # Как и параметры, дополнения только добавляют: тот же id не перекрывается
+        self.dtcodes.setdefault(code.id, code)
 
     def get(self, param_id: str) -> LoggerParam:
         return self.params[param_id]

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,16 +17,17 @@ from typing import Protocol
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from src.i18n import N_, tr
+from src.logger.core.adapter import Adapter
 from src.logger.core.defs import LoggerDefs, LoggerParam
 from src.logger.core.params import decimals
 from src.logger.core.paths import default_logs_root, rom_log_dir
 from src.logger.core.profile import ProfileItem, list_profiles, load_profile, save_profile
 from src.logger.core.runner import LoggerRunner
-from src.logger.core.session import Connection, Poller, Sample, connect
+from src.logger.core.session import Connection, DtcReading, Poller, Sample, connect
 from src.logger.core.trace import Trace
 from src.logger.core.transport.emulator import FakeEcu, FakeOpenPort, demo_memory
-from src.logger.core.transport.op2 import NO_REPLY, ByteStream, OpenPort2, OpenPortError
-from src.logger.ui.window import LiveRow, LoggerWindow, ParamRow
+from src.logger.core.transport.op2 import NO_REPLY, ByteStream, OpenPortError
+from src.logger.ui.window import DtcRow, LiveRow, LoggerWindow, ParamRow
 
 ROOT = Path(__file__).resolve().parents[2]
 LOGGER_DEFS = ROOT / "definitions" / "logger" / "logger_defs.xml"
@@ -76,6 +78,9 @@ class _Bridge(QObject):
 
     sample = pyqtSignal(object)
     error = pyqtSignal(object)
+    dtc_read = pyqtSignal(object)
+    dtc_cleared = pyqtSignal(object)
+    dtc_error = pyqtSignal(object)
 
 
 class LoggerPresenter:
@@ -97,19 +102,24 @@ class LoggerPresenter:
         if settings is not None:
             extra.append((settings.logger_extra_dir, "user"))
         self.defs = LoggerDefs.load(LOGGER_DEFS, extra)
-        self._stream: ByteStream | None = None
-        self._device: OpenPort2 | None = None
-        self._trace: Trace | None = None
+        self._adapter: Adapter | None = None
         self.connection: Connection | None = None
+        self._status = ""  # строка состояния подключения (без обрывов)
+        self._shown_status = ""
         self.runner: LoggerRunner | None = None
         self._supported: set[str] | None = None  # None — не подключены, показываем всё
         self._units: dict[str, str] = {}  # выбранные единицы (переживают перестройку дерева)
         self._latest: Sample | None = None
         self._min: dict[str, float] = {}
         self._max: dict[str, float] = {}
+        self._dtc_token: object | None = None  # текущее чтение/сброс кодов
+        self._dtc_read_done = False  # коды прочитаны — сброс разрешён
         self._bridge = _Bridge()
         self._bridge.sample.connect(self._on_sample)
         self._bridge.error.connect(self._on_error)
+        self._bridge.dtc_read.connect(self._on_dtc_read)
+        self._bridge.dtc_cleared.connect(self._on_dtc_cleared)
+        self._bridge.dtc_error.connect(self._on_dtc_error)
         self._timer = QTimer()
         self._timer.setInterval(1000 // UI_HZ)
         self._timer.timeout.connect(self._refresh)
@@ -126,6 +136,8 @@ class LoggerPresenter:
         w.open_profile_requested.connect(self._open_profile)
         w.save_profile_requested.connect(self._save_profile)
         w.choose_folder_requested.connect(self._choose_folder)
+        w.dtc_read_requested.connect(self.read_dtc)
+        w.dtc_clear_requested.connect(self.clear_dtc)
         w.closed.connect(self.disconnect)
         self.refresh_ports()
         self._fill_tree(set())
@@ -141,20 +153,18 @@ class LoggerPresenter:
 
     def connect(self, port: str) -> None:
         self.disconnect()
+        if port == EMULATOR_PORT:
+            # Как на машине: RAM по CAN не отдаётся, K-line отвечает с задержкой
+            adapter = Adapter(
+                lambda: FakeOpenPort(FakeEcu(memory=demo_memory(), can_rejects_ram=True), kline_delay=0.08),
+                reset_pause=0,
+            )
+        else:
+            adapter = Adapter(lambda: self._open_port(self._current_path(port)), self._open_trace())
+        self._adapter = adapter
         try:
-            if port == EMULATOR_PORT:
-                # Как на машине: RAM по CAN не отдаётся, K-line отвечает с задержкой
-                self._stream = FakeOpenPort(FakeEcu(memory=demo_memory(), can_rejects_ram=True), kline_delay=0.08)
-            else:
-                self._stream = self._open_port(port)
-                self._trace = self._open_trace()
-            device = OpenPort2(self._stream, self._trace)
-            self._device = device
-            version = device.identify()
-            voltage = device.read_voltage()
-            if self._trace:
-                self._trace.note(f"{version}; OBD pin 16 = {voltage:.2f} V")
-            self.connection = connect(device)
+            opened = adapter.open()
+            self.connection = opened.connection
         except Exception as exc:  # noqa: BLE001 — показать в окне; порт закрыть
             self._close_port()
             self.window.set_connected(False, tr("Не подключено"))
@@ -166,16 +176,24 @@ class LoggerPresenter:
         if self._settings is not None:
             self._settings.set_logger_port(port)
         self._supported = {p.id for p in self.defs.supported(self.connection.init)}
-        self.runner = LoggerRunner(Poller(self.connection, self.defs), self._bridge.sample.emit, self._bridge.error.emit)
+        self.runner = LoggerRunner(
+            Poller(self.connection, self.defs), self._bridge.sample.emit, self._bridge.error.emit,
+            reconnect=adapter.reopen,
+        )
         selected = self.window.selected()
         self._fill_tree({pid for pid, _units in selected})
-        self.window.set_connected(True, self._status_text(voltage))
+        self._status = self._shown_status = self._status_text(opened.voltage)
+        self.window.set_connected(True, self._status)
         self._apply_selection()
         self.runner.start()
         self._timer.start()
 
     def disconnect(self) -> None:
         self._timer.stop()
+        self._dtc_token = None  # ответы на чтение/сброс, пришедшие позже, игнорируются
+        self._dtc_read_done = False
+        if self._adapter is not None:
+            self._adapter.interrupt()  # не ждать переподключения, если оно идёт
         if self.runner is not None:
             path = self.runner.stop_recording()
             self.runner.stop()
@@ -206,21 +224,17 @@ class LoggerPresenter:
         folder.mkdir(parents=True, exist_ok=True)
         return Trace.to_file(folder / f"trace_{datetime.now():%Y%m%d_%H%M%S}.log")
 
+    def _current_path(self, port: str) -> str:
+        """Путь порта для (пере)открытия: после сброса адаптер может появиться под другим
+        именем — тогда берётся единственный найденный OpenPort."""
+        ports = self._find_ports()
+        return ports[0] if port not in ports and len(ports) == 1 else port
+
     def _close_port(self) -> None:
-        # Сначала закрыть каналы адаптера — не оставлять его с открытым CAN и фильтрами
-        device, self._device = self._device, None
-        if device is not None:
-            try:
-                device.close_all()
-            except Exception:  # noqa: BLE001 — адаптер уже мог пропасть, порт закроем всё равно
-                pass
-        stream, self._stream = self._stream, None
-        close = getattr(stream, "close", None)
-        if callable(close):
-            close()
-        if self._trace is not None:
-            self._trace.close()
-            self._trace = None
+        # Каналы закрыть, адаптер сбросить — не оставлять его с открытым CAN и фильтрами
+        adapter, self._adapter = self._adapter, None
+        if adapter is not None:
+            adapter.close()
 
     # --- Параметры ---
 
@@ -297,11 +311,103 @@ class LoggerPresenter:
             )
             self.window.set_row_state(pid, tip, slow, unsupported)
         self.window.set_rate(runner.rate)
+        self._show_link(runner)
         self.window.redraw_graphs(sample.time_ms / 1000)
+
+    def _show_link(self, runner: LoggerRunner) -> None:
+        """Строка состояния: обрыв идёт — сколько длится и какая попытка; после — счётчик."""
+        link = runner.link
+        if link.lost_since is not None:
+            text = tr("Связь потеряна {seconds} с назад — переподключение, попытка {n}",
+                      seconds=f"{time.monotonic() - link.lost_since:.0f}", n=link.attempts)
+            if text != self._shown_status:
+                self._shown_status = text
+                self.window.set_error(text)
+            return
+        text = self._status
+        if link.drops:
+            text += " · " + tr("обрывов: {n}, без связи {seconds} с", n=link.drops,
+                               seconds=f"{link.downtime:.0f}")
+        if text != self._shown_status:
+            self._shown_status = text
+            self.window.set_connected(True, text)
 
     def mark(self) -> None:
         if self.runner is not None:
             self.runner.mark()
+
+    # --- Ошибки (DTC) ---
+
+    def read_dtc(self) -> None:
+        """Прочитать коды: в потоке опроса, результат — сигналом в GUI."""
+        runner = self.runner
+        if runner is None or self._dtc_token is not None:
+            return
+        token = object()
+        self._dtc_token = token
+        self.window.set_dtc_busy(True, tr("Чтение кодов…"))
+        runner.call(
+            runner.poller.read_dtc,
+            lambda rows: self._bridge.dtc_read.emit((token, rows)),
+            lambda exc: self._bridge.dtc_error.emit((token, "read", exc)),
+        )
+
+    def clear_dtc(self) -> None:
+        """Сброс памяти ошибок — только после чтения и подтверждения пользователя."""
+        runner = self.runner
+        if runner is None or self._dtc_token is not None:
+            return
+        if not self._dtc_read_done:
+            self.window.set_dtc_error(tr("Сначала прочитайте коды"))
+            return
+        if runner.recording is not None:
+            self.window.set_dtc_error(tr("Пока пишется лог, сброс недоступен — остановите запись"))
+            return
+        if not self.window.ask_clear_dtc():
+            return
+        token = object()
+        self._dtc_token = token
+        self.window.set_dtc_busy(True, tr("Сброс ошибок…"))
+        runner.call(
+            runner.poller.clear_dtc,
+            lambda rows: self._bridge.dtc_cleared.emit((token, rows)),
+            lambda exc: self._bridge.dtc_error.emit((token, "clear", exc)),
+        )
+
+    def _on_dtc_read(self, payload: tuple[object, list[DtcReading]]) -> None:
+        token, readings = payload
+        if token is not self._dtc_token:
+            return  # ответ на прежнее подключение/чтение
+        self._dtc_token = None
+        self._dtc_read_done = True
+        self.window.set_dtc_busy(False)
+        self.window.set_dtc_rows(_dtc_rows(readings))
+
+    def _on_dtc_cleared(self, payload: tuple[object, list[DtcReading]]) -> None:
+        token, readings = payload
+        if token is not self._dtc_token:
+            return
+        self._dtc_token = None
+        self._dtc_read_done = True  # после сброса коды прочитаны заново
+        self.window.set_dtc_busy(False)
+        self.window.set_dtc_rows(_dtc_rows(readings))
+        self.window.set_dtc_status(
+            tr("Ошибки сброшены (reset ЭБУ). Кодов после сброса: {n}", n=len(readings))
+        )
+
+    def _on_dtc_error(self, payload: tuple[object, str, Exception]) -> None:
+        token, action, error = payload
+        if token is not self._dtc_token:
+            return
+        self._dtc_token = None
+        self.window.set_dtc_busy(False)
+        if action == "clear":
+            # Сброс мог и пройти: старое содержимое памяти уже не достоверно
+            self._dtc_read_done = False
+            self.window.forget_dtc()
+            self.window.set_dtc_error(tr("Сброс не завершён: {error}", error=error))
+        else:
+            self.window.set_dtc_error(tr("Ошибки не прочитаны: {error}", error=error))
 
     # --- Запись ---
 
@@ -399,6 +505,10 @@ class LoggerPresenter:
         # График у нас — всё выбранное; в профиле RomRaider отмечаем так же
         items = [ProfileItem(pid, units, True) for pid, units in self.window.selected()]
         save_profile(path, items)
+
+
+def _dtc_rows(readings: list[DtcReading]) -> list[DtcRow]:
+    return [DtcRow(r.code.id, r.code.name, r.current, r.stored) for r in readings]
 
 
 def _tooltip(param: LoggerParam) -> str:

@@ -126,10 +126,20 @@ class OpenPort2:
     def close_all(self) -> None:
         self.command("ata")
 
+    def reset(self) -> None:
+        """`atz` — сброс адаптера (как при закрытии в j2534 для Linux/Mac). Ответа не ждём:
+        адаптер перезагружается, порт после этого надо закрыть и открыть заново."""
+        self._send_command("atz")
+
     def read_voltage(self, pin: int = 16) -> float:
         """Напряжение на пине OBD, В (16 — питание машины; без машины около 0)."""
         reply = self.command("atr", pin)
         return int(reply.args[1]) / 1000
+
+    def note(self, text: str) -> None:
+        """Запись в журнал обмена без байт (событие: сброс ЭБУ, переподключение)."""
+        if self._trace is not None:
+            self._trace.note(text)
 
     def open_channel(self, protocol: int, flags: int, baud: int, channel: int) -> None:
         self.command(f"ato{protocol}", flags, baud, channel)

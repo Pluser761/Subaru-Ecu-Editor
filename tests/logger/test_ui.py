@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
 
 from src.logger.core.profile import ProfileItem, list_profiles, load_profile, save_profile
+from src.logger.core.session import DtcReading
 from src.logger.presenter import EMULATOR_PORT, LOGGER_PROFILES, LoggerPresenter, RomInfo
-from src.logger.ui.window import LoggerWindow
+from src.logger.ui.window import DtcRow, LoggerWindow
 
 
 class FakeSettings:
@@ -153,3 +155,82 @@ def test_quick_pick_filters_and_applies(logger: LoggerPresenter, tmp_path: Path)
     picker.choose_current()  # как Enter
     assert not picker.isVisible()
     assert logger.window.selected() == [("P8", "rpm"), ("P12", "g/s")]
+
+
+def test_link_status_shows_outage_and_drops(logger: LoggerPresenter) -> None:
+    _connect_without_thread(logger)
+    runner = logger.runner
+    assert runner is not None
+    window = logger.window
+    window.set_checked({"P8": None})
+    runner.step()
+    runner.link.drops, runner.link.attempts, runner.link.lost_since = 1, 3, time.monotonic() - 12
+    logger._refresh()
+    assert "попытка 3" in window._status.text() and "12 с" in window._status.text()
+    assert window._connect_btn.text() == "Отключить"  # «Отключить» доступен и во время обрыва
+    runner.link.lost_since, runner.link.downtime = None, 14.2
+    logger._refresh()
+    assert "ЭБУ 5C42584007" in window._status.text() and "обрывов: 1, без связи 14 с" in window._status.text()
+
+
+def test_dtc_read_then_clear(logger: LoggerPresenter, monkeypatch: pytest.MonkeyPatch) -> None:
+    _connect_without_thread(logger)
+    window, runner = logger.window, logger.runner
+    assert runner is not None
+    assert not window._dtc_clear_btn.isEnabled()  # без чтения сброс недоступен
+
+    readings = [
+        DtcReading(logger.defs.dtcodes["D1"], True, False),
+        DtcReading(logger.defs.dtcodes["D3"], False, True),
+    ]
+    monkeypatch.setattr(runner.poller, "read_dtc", lambda: readings)
+    window._dtc_read_btn.click()  # цикл остановлен — команда выполняется сразу
+    assert logger._dtc_read_done
+    first = window._dtc_tree.topLevelItem(0)
+    assert first is not None
+    assert (first.text(0), first.text(2), first.text(3)) == ("D1", "✓", "")
+    second = window._dtc_tree.topLevelItem(1)
+    assert second is not None
+    assert (second.text(0), second.text(2), second.text(3)) == ("D3", "", "✓")
+    assert window._dtc_clear_btn.isEnabled()
+
+    asked: list[bool] = []
+    cleared: list[int] = []
+    monkeypatch.setattr(runner.poller, "clear_dtc", lambda: cleared.append(1) or [])
+    monkeypatch.setattr(window, "ask_clear_dtc", lambda: asked.append(True) or False)
+    window._dtc_clear_btn.click()
+    assert asked == [True] and not cleared  # подтверждение не дано — сброса нет
+    assert window._dtc_tree.topLevelItemCount() == 2
+
+    monkeypatch.setattr(window, "ask_clear_dtc", lambda: True)
+    window._dtc_clear_btn.click()
+    assert cleared == [1]
+    assert window._dtc_tree.topLevelItemCount() == 0
+    assert "сброшены" in window._dtc_status.text()
+
+
+def test_dtc_clear_blocked_without_read_and_while_recording(
+    logger: LoggerPresenter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _connect_without_thread(logger)
+    window, runner = logger.window, logger.runner
+    assert runner is not None
+    cleared: list[int] = []
+    monkeypatch.setattr(runner.poller, "clear_dtc", lambda: cleared.append(1) or [])
+
+    logger.clear_dtc()
+    assert not cleared and "Сначала прочитайте коды" in window._dtc_status.text()
+
+    window.set_dtc_rows([DtcRow("D1", "P0335 TEST", True, False)])
+    logger._dtc_read_done = True
+    assert window._dtc_clear_btn.isEnabled()
+
+    runner._log_path = tmp_path / "log.csv"  # как будто идёт запись
+    window.set_recording(str(runner._log_path))
+    assert not window._dtc_clear_btn.isEnabled()
+    logger.clear_dtc()
+    assert not cleared and "остановите запись" in window._dtc_status.text()
+
+    runner._log_path = None
+    window.set_recording(None)
+    assert window._dtc_clear_btn.isEnabled()
