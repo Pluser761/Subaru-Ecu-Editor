@@ -80,15 +80,15 @@ class MainPresenter:
         # Единицы на экране; ROM, сессия и checkpoint — всегда в единицах definitions
         self._units_system = settings.unit_system() if settings is not None else UnitSystem.DEFINITIONS
 
-        window.on_open_rom = self.open_rom
-        window.on_save_rom = self.save_rom
-        window.on_save_rom_as = self.save_rom_as
+        window.open_rom_requested.connect(self.open_rom)
+        window.save_rom_requested.connect(self.save_rom)
+        window.save_rom_as_requested.connect(self.save_rom_as)
         window.on_close_requested = self._confirm_discard
-        window.on_transfer_maps = self.transfer_maps
-        window.on_show_switches = self.show_switches
-        window.on_revert_all = self.revert_all
-        window.on_unit_system = self.set_unit_system
-        window.on_language = self.set_language
+        window.transfer_maps_requested.connect(self.transfer_maps)
+        window.show_switches_requested.connect(self.show_switches)
+        window.revert_all_requested.connect(self.revert_all)
+        window.unit_system_requested.connect(self.set_unit_system)
+        window.language_requested.connect(self.set_language)
         # ИИ: MCP-сервер в этом же процессе — видит открытую сессию, правки подтверждает пользователь
         self._ai = AiPresenter(
             window,
@@ -98,16 +98,14 @@ class MainPresenter:
             on_show_map=self.select_map,
             notes=self._notes,
         )
-        window.on_ai_server = self.set_ai_server
-        window.on_ai_help = lambda: window.show_ai_help(self._ai.url, self._ai.running)
-        window.on_ai_notes = self.show_notes
-        window.on_open_defs_folder = self.open_defs_folder
-        window.on_open_logger = self.open_logger
+        window.ai_server_toggled.connect(self.set_ai_server)
+        window.ai_help_requested.connect(lambda: window.show_ai_help(self._ai.url, self._ai.running))
+        window.ai_notes_requested.connect(self.show_notes)
+        window.open_defs_folder_requested.connect(self.open_defs_folder)
+        window.open_logger_requested.connect(self.open_logger)
         # Логгер — отдельное окно, создаётся при первом открытии
         self._logger: LoggerPresenter | None = None
         window.set_unit_system_checked(self._units_system)
-        window.on_show_editor = window.show_editor
-        window.on_show_tools = window.show_tools
 
         editor = window.editor_view
         editor.map_selected.connect(self.select_map)

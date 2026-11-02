@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QKeySequence
 from PyQt6.QtWidgets import (
     QMainWindow,
@@ -29,6 +29,21 @@ from src.version import APP_NAME, version
 
 class MainWindow(QMainWindow):
     """Оболочка приложения: меню, разделы, статусбар."""
+
+    # События меню: окно лишь сообщает о действии, что делать решает presenter
+    open_rom_requested = pyqtSignal()
+    save_rom_requested = pyqtSignal()
+    save_rom_as_requested = pyqtSignal()
+    transfer_maps_requested = pyqtSignal()
+    show_switches_requested = pyqtSignal()
+    revert_all_requested = pyqtSignal()
+    unit_system_requested = pyqtSignal(UnitSystem)
+    language_requested = pyqtSignal(Language)
+    ai_server_toggled = pyqtSignal(bool)
+    ai_help_requested = pyqtSignal()
+    ai_notes_requested = pyqtSignal()
+    open_defs_folder_requested = pyqtSignal()
+    open_logger_requested = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -57,27 +72,9 @@ class MainWindow(QMainWindow):
 
         self._build_menu()
 
-        # Колбэки, которые вешает presenter
-        self.on_open_rom: Callable[[], None] | None = None
-        # Сохранение возвращает, удалось ли (результат окну не нужен)
-        self.on_save_rom: Callable[[], object] | None = None
-        self.on_save_rom_as: Callable[[], object] | None = None
-        self.on_show_editor: Callable[[], None] | None = None
-        self.on_show_tools: Callable[[], None] | None = None
-        self.on_transfer_maps: Callable[[], None] | None = None
-        self.on_show_switches: Callable[[], None] | None = None
-        self.on_revert_all: Callable[[], None] | None = None
-        self.on_unit_system: Callable[[UnitSystem], None] | None = None
-        self.on_language: Callable[[Language], None] | None = None
-        # Меню «ИИ»: включить/выключить MCP-сервер, как подключиться
-        self.on_ai_server: Callable[[bool], None] | None = None
-        self.on_ai_help: Callable[[], None] | None = None
-        self.on_ai_notes: Callable[[], None] | None = None
-        self.on_open_defs_folder: Callable[[], None] | None = None
-        self.on_open_logger: Callable[[], None] | None = None
-        # Можно ли закрыть окно (несохранённые правки); False — отменить закрытие
+        # Синхронные хуки закрытия (нужен результат, а не событие): presenter задаёт их,
+        # closeEvent вызывает напрямую
         self.on_close_requested: Callable[[], bool] | None = None
-        # Перед закрытием окна (сохранение настроек)
         self.on_close: Callable[[], None] | None = None
 
     def _build_menu(self) -> None:
@@ -88,17 +85,17 @@ class MainWindow(QMainWindow):
         assert file_menu is not None
         open_action = QAction(tr("&Открыть ROM…"), self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
-        open_action.triggered.connect(self._emit_open)
+        open_action.triggered.connect(self.open_rom_requested)
         file_menu.addAction(open_action)
 
         save_action = QAction(tr("&Сохранить ROM"), self)
         save_action.setShortcut(QKeySequence.StandardKey.Save)
-        save_action.triggered.connect(self._emit_save)
+        save_action.triggered.connect(self.save_rom_requested)
         file_menu.addAction(save_action)
 
         save_as_action = QAction(tr("Сохранить ROM &как…"), self)
         save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
-        save_as_action.triggered.connect(self._emit_save_as)
+        save_as_action.triggered.connect(self.save_rom_as_requested)
         file_menu.addAction(save_as_action)
 
         file_menu.addSeparator()
@@ -107,7 +104,7 @@ class MainWindow(QMainWindow):
             "Свои дополнения definitions (RomRaider или EcuFlash, например SubaruDefs); "
             "подхватываются при следующем запуске"
         ))
-        defs_action.triggered.connect(lambda: self.on_open_defs_folder and self.on_open_defs_folder())
+        defs_action.triggered.connect(self.open_defs_folder_requested)
         file_menu.addAction(defs_action)
         settings_action = QAction(tr("Настройки…"), self)
         # У Preferences нет стандартной клавиши на Windows — тогда Ctrl+,
@@ -129,11 +126,11 @@ class MainWindow(QMainWindow):
         view_menu = menu.addMenu(tr("&Вид"))
         assert view_menu is not None
         editor_action = QAction(tr("&Редактор"), self)
-        editor_action.triggered.connect(self._emit_show_editor)
+        editor_action.triggered.connect(self.show_editor)
         view_menu.addAction(editor_action)
 
         tools_action = QAction(tr("&Инструменты"), self)
-        tools_action.triggered.connect(self._emit_show_tools)
+        tools_action.triggered.connect(self.show_tools)
         view_menu.addAction(tools_action)
 
         view_menu.addSeparator()
@@ -148,7 +145,7 @@ class MainWindow(QMainWindow):
         ):
             action = QAction(title, self)
             action.setCheckable(True)
-            action.triggered.connect(lambda _checked, s=system: self._emit_unit_system(s))
+            action.triggered.connect(lambda _checked, s=system: self.unit_system_requested.emit(s))
             group.addAction(action)
             units_menu.addAction(action)
             self._unit_actions[system] = action
@@ -163,7 +160,7 @@ class MainWindow(QMainWindow):
             action = QAction(title, self)
             action.setCheckable(True)
             action.setChecked(lang is current_language())
-            action.triggered.connect(lambda _checked, value=lang: self._emit_language(value))
+            action.triggered.connect(lambda _checked, value=lang: self.language_requested.emit(value))
             language_group.addAction(action)
             language_menu.addAction(action)
             self._language_actions[lang] = action
@@ -181,38 +178,38 @@ class MainWindow(QMainWindow):
         maps_menu = menu.addMenu(tr("&Карты"))
         assert maps_menu is not None
         transfer_action = QAction(tr("Перенести карты из другой прошивки…"), self)
-        transfer_action.triggered.connect(self._emit_transfer_maps)
+        transfer_action.triggered.connect(self.transfer_maps_requested)
         maps_menu.addAction(transfer_action)
 
         revert_action = QAction(tr("Откатить все карты к checkpoint…"), self)
         revert_action.setToolTip(tr("Вернуть в прошивке значения и оси всех изменённых карт к их checkpoint"))
-        revert_action.triggered.connect(lambda: self.on_revert_all and self.on_revert_all())
+        revert_action.triggered.connect(self.revert_all_requested)
         maps_menu.addAction(revert_action)
 
         switches_action = QAction(tr("Ошибки и переключатели…"), self)
         switches_action.setShortcut(QKeySequence("Ctrl+E"))
-        switches_action.triggered.connect(self._emit_show_switches)
+        switches_action.triggered.connect(self.show_switches_requested)
         maps_menu.addAction(switches_action)
 
         logger_menu = menu.addMenu(tr("&Логгер"))
         assert logger_menu is not None
         logger_action = QAction(tr("Открыть логгер…"), self)
         logger_action.setShortcut(QKeySequence("Ctrl+L"))
-        logger_action.triggered.connect(lambda: self.on_open_logger and self.on_open_logger())
+        logger_action.triggered.connect(self.open_logger_requested)
         logger_menu.addAction(logger_action)
 
         ai_menu = menu.addMenu(tr("&ИИ"))
         assert ai_menu is not None
         self.ai_server_action = QAction(tr("MCP-сервер для ИИ"), self)
         self.ai_server_action.setCheckable(True)
-        self.ai_server_action.toggled.connect(self._emit_ai_server)
+        self.ai_server_action.toggled.connect(self.ai_server_toggled)
         ai_menu.addAction(self.ai_server_action)
         ai_help_action = QAction(tr("Как подключить Claude…"), self)
-        ai_help_action.triggered.connect(lambda: self.on_ai_help and self.on_ai_help())
+        ai_help_action.triggered.connect(self.ai_help_requested)
         ai_menu.addAction(ai_help_action)
         ai_menu.addSeparator()
         ai_notes_action = QAction(tr("Заметки о прошивке…"), self)
-        ai_notes_action.triggered.connect(lambda: self.on_ai_notes and self.on_ai_notes())
+        ai_notes_action.triggered.connect(self.ai_notes_requested)
         ai_menu.addAction(ai_notes_action)
 
     def closeEvent(self, event: QCloseEvent | None) -> None:
@@ -312,18 +309,6 @@ class MainWindow(QMainWindow):
     def show_info(self, title: str, text: str) -> None:
         QMessageBox.information(self, title, text)
 
-    def _emit_open(self) -> None:
-        if self.on_open_rom:
-            self.on_open_rom()
-
-    def _emit_transfer_maps(self) -> None:
-        if self.on_transfer_maps:
-            self.on_transfer_maps()
-
-    def _emit_save(self) -> None:
-        if self.on_save_rom:
-            self.on_save_rom()
-
     def set_unit_system_checked(self, system: UnitSystem) -> None:
         self._unit_actions[system].setChecked(True)
 
@@ -355,10 +340,6 @@ class MainWindow(QMainWindow):
             tr("Язык интерфейса изменится после перезапуска. Перезапустить сейчас?"),
         )
         return answer == QMessageBox.StandardButton.Yes
-
-    def _emit_ai_server(self, enabled: bool) -> None:
-        if self.on_ai_server:
-            self.on_ai_server(enabled)
 
     def set_ai_server_checked(self, enabled: bool) -> None:
         """Отметка в меню без сигнала (сервер не запустился, восстановление из настроек)."""
@@ -405,34 +386,6 @@ class MainWindow(QMainWindow):
             )
         )
         box.exec()
-
-    def _emit_language(self, language: Language) -> None:
-        if self.on_language:
-            self.on_language(language)
-
-    def _emit_unit_system(self, system: UnitSystem) -> None:
-        if self.on_unit_system:
-            self.on_unit_system(system)
-
-    def _emit_show_switches(self) -> None:
-        if self.on_show_switches:
-            self.on_show_switches()
-
-    def _emit_save_as(self) -> None:
-        if self.on_save_rom_as:
-            self.on_save_rom_as()
-
-    def _emit_show_editor(self) -> None:
-        if self.on_show_editor:
-            self.on_show_editor()
-        else:
-            self.show_editor()
-
-    def _emit_show_tools(self) -> None:
-        if self.on_show_tools:
-            self.on_show_tools()
-        else:
-            self.show_tools()
 
 
 def _app_title() -> str:
