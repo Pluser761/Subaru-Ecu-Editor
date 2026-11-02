@@ -65,10 +65,7 @@ def read_raw_values(
                 f"ROM truncated: need {end} bytes for value at 0x{address:X}"
             )
         chunk = rom[start:end]
-        if size == 1:
-            (raw,) = struct.unpack(fmt, chunk)
-        else:
-            (raw,) = struct.unpack(fmt, chunk)
+        (raw,) = struct.unpack(fmt, chunk)
         out.append(float(raw))
     return out
 
