@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from src.i18n import tr
-from src.core.models import AxisDef, CalibrationTable, Checkpoint, Scaling, TableDef
+from src.core.models import Axis, AxisDef, CalibrationTable, Checkpoint, Scaling, TableDef
 from src.core.rom_io import is_static_axis
 from src.core.scaling import eval_expression
 
@@ -111,8 +111,8 @@ class TableUnits:
     def identity(self) -> bool:
         return self.value is None and self.x is None and self.y is None
 
-    def axis(self, name: str) -> Conversion | None:
-        return self.x if name == "x" else self.y
+    def axis(self, axis: Axis) -> Conversion | None:
+        return self.x if axis is Axis.X else self.y
 
     # --- definitions → экран ---
 
@@ -132,22 +132,23 @@ class TableUnits:
                 decimals=conv.decimals,
             )
             notes.append(tr("значения в {target} (в definitions — {source})", target=conv.target, source=conv.source))
-        for name, axis_conv in (("x", self.x), ("y", self.y)):
+        for axis, axis_conv in ((Axis.X, self.x), (Axis.Y, self.y)):
             if axis_conv is None:
                 continue
-            increments = getattr(table, f"{name}_increments")
-            update.update({
-                f"{name}_axis": [axis_conv.display(v) for v in getattr(table, f"{name}_axis")],
-                f"{name}_title": axis_conv.relabel(getattr(table, f"{name}_title")),
-                f"{name}_increments": (
-                    None if increments is None else (_scaled(increments[0], axis_conv), _scaled(increments[1], axis_conv))
-                ),
-                f"{name}_decimals": axis_conv.decimals,
-            })
+            increments = table.axis_increments(axis)
+            values = [axis_conv.display(v) for v in table.axis_values(axis)]
+            title = axis_conv.relabel(table.axis_title(axis))
+            scaled = (
+                None if increments is None else (_scaled(increments[0], axis_conv), _scaled(increments[1], axis_conv))
+            )
+            if axis is Axis.X:
+                update.update(x_axis=values, x_title=title, x_increments=scaled, x_decimals=axis_conv.decimals)
+            else:
+                update.update(y_axis=values, y_title=title, y_increments=scaled, y_decimals=axis_conv.decimals)
             notes.append(
                 tr(
                     "ось {axis} в {target} (в definitions — {source})",
-                    axis=name.upper(),
+                    axis=axis.name,
                     target=axis_conv.target,
                     source=axis_conv.source,
                 )
@@ -161,8 +162,8 @@ class TableUnits:
     def value_display(self, value: float) -> float:
         return value if self.value is None else self.value.display(value)
 
-    def axis_display(self, name: str, value: float) -> float:
-        conv = self.axis(name)
+    def axis_display(self, axis: Axis, value: float) -> float:
+        conv = self.axis(axis)
         return value if conv is None else conv.display(value)
 
     # --- экран → definitions ---
@@ -173,8 +174,8 @@ class TableUnits:
     def value_definition(self, value: float) -> float:
         return value if self.value is None else self.value.definition(value)
 
-    def axis_definition(self, name: str, value: float) -> float:
-        conv = self.axis(name)
+    def axis_definition(self, axis: Axis, value: float) -> float:
+        conv = self.axis(axis)
         return value if conv is None else conv.definition(value)
 
     def _map_checkpoint(self, checkpoint: Checkpoint, *, display: bool) -> Checkpoint:

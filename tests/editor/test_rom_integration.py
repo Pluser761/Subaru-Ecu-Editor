@@ -4,6 +4,7 @@ from collections import Counter
 
 import pytest
 
+from src.core.models import Axis
 from src.core.parser import EcuParser
 from src.core.transfer import ResultStatus, apply_transfer, check_compatibility, plan_transfer
 
@@ -32,15 +33,15 @@ def test_write_cell_returns_quantized_value(jdm: EcuParser):
 
 def test_shared_axis_users_know_axis_kind(jdm: EcuParser):
     assert len(jdm.axis_users()[ECT_AXIS]) == 19
-    users = dict(jdm.shared_axis_users("Idle Speed Target A", "y"))
-    assert users == {"Idle Speed Target B": "y", "Idle Speed Target C": "y"}
+    users = dict(jdm.shared_axis_users("Idle Speed Target A", Axis.Y))
+    assert users == {"Idle Speed Target B": Axis.Y, "Idle Speed Target C": Axis.Y}
     # Та же ось ECT — Y у 2D-таблиц и X у 3D
-    kinds = dict(jdm.shared_axis_users("Primary Open Loop Fueling Compensation (ECT)", "y"))
-    assert kinds["CL Fueling Target Compensation Imm. Cruise (ECT)"] == "x"
+    kinds = dict(jdm.shared_axis_users("Primary Open Loop Fueling Compensation (ECT)", Axis.Y))
+    assert kinds["CL Fueling Target Compensation Imm. Cruise (ECT)"] == Axis.X
 
 
 def test_axis_write_changes_all_tables_on_shared_axis(jdm: EcuParser):
-    jdm.write_axis("Idle Speed Target A", "y", 4, 40.0)
+    jdm.write_axis("Idle Speed Target A", Axis.Y, 4, 40.0)
     assert jdm.load_table("Idle Speed Target C").y_axis[4] == pytest.approx(40.0)
 
 
