@@ -68,7 +68,8 @@ def test_outage_reconnects_and_continues_csv(defs: LoggerDefs, tmp_path: Path) -
         runner.stop()
         adapter.close()
     assert not errors and runner.link.drops == 1 and runner.link.downtime > 0.2
-    assert len(opened) >= 3 and port.resets >= 2  # каждая попытка — сброс и новое открытие порта
+    assert len(opened) >= 3  # каждая попытка переподключения — новое открытие порта
+    assert port.resets >= 1  # закрытие сбрасывает адаптер (atz)
     rows = [line.split(";") for line in path.read_text().splitlines()[1:]]
     marks = [int(row[-1]) for row in rows]
     assert marks.count(MARK_RESTORED) == 1 and marks[-1] == 0
@@ -104,6 +105,18 @@ def test_without_reconnect_error_stops(defs: LoggerDefs) -> None:
     port.silent = True
     _wait(lambda: bool(errors))
     runner.stop()
+
+
+def test_reopen_resets_adapter() -> None:
+    """Переподключение сбрасывает адаптер (atz) — как и закрытие, но без close_all."""
+    port = FakeOpenPort()
+    adapter = Adapter(lambda: port, reset_pause=0)
+    adapter.open()
+    assert port.resets == 0
+    adapter.reopen("test")
+    assert port.resets == 1  # reopen: сброс до нового открытия порта
+    adapter.close()
+    assert port.resets == 2  # close: сброс ещё раз
 
 
 def test_close_resets_adapter_and_next_open_waits(monkeypatch: pytest.MonkeyPatch) -> None:

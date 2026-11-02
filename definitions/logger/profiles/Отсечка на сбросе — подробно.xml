@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<profile protocol="SSM">
+    <parameters>
+        <parameter id="P8" livedata="selected" graph="selected" units="rpm"/>
+        <parameter id="P21" livedata="selected" graph="selected" units="ms"/>
+        <parameter id="P30" livedata="selected" graph="selected" units="%"/>
+        <parameter id="E9001" livedata="selected" units="raw"/>
+        <parameter id="E9002" livedata="selected" graph="selected" units="raw"/>
+        <parameter id="E9003" livedata="selected" units="raw"/>
+        <parameter id="E9006" livedata="selected" units="raw"/>
+        <parameter id="E9007" livedata="selected" units="raw"/>
+        <parameter id="P9" livedata="selected" units="km/h"/>
+    </parameters>
+    <switches>
+    </switches>
+    <externals>
+    </externals>
+</profile>

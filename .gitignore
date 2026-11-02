@@ -29,8 +29,6 @@ tmp
 
 # Локальные инструменты реверса прошивок (не коммитим)
 tools
-/definitions/logger/profiles/
-
 
 # only readme md
 *.md

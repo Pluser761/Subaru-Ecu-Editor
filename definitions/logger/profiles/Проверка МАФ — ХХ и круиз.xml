@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<profile protocol="SSM">
+    <parameters>
+        <parameter id="P8" livedata="selected" graph="selected" units="rpm"/>
+        <parameter id="P12" livedata="selected" graph="selected" units="g/s"/>
+        <parameter id="P18" livedata="selected" graph="selected" units="V"/>
+        <parameter id="P3" livedata="selected" graph="selected" units="%"/>
+        <parameter id="P4" livedata="selected" graph="selected" units="%"/>
+        <parameter id="P58" livedata="selected" graph="selected" units="AFR"/>
+        <parameter id="P200" livedata="selected" graph="selected" units="g/rev"/>
+        <parameter id="P13" livedata="selected" graph="selected" units="%"/>
+        <parameter id="P9" livedata="selected" graph="selected" units="km/h"/>
+        <parameter id="P2" livedata="selected" graph="selected" units="C"/>
+    </parameters>
+    <switches>
+    </switches>
+    <externals>
+    </externals>
+</profile>

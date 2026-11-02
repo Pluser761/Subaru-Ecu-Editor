@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<profile protocol="SSM">
+    <parameters>
+        <parameter id="P8" livedata="selected" units="rpm"/>
+    </parameters>
+    <switches>
+        <switch id="S20" livedata="selected"/>
+        <switch id="S21" livedata="selected"/>
+        <switch id="S22" livedata="selected"/>
+        <switch id="S23" livedata="selected"/>
+        <switch id="S63" livedata="selected"/>
+        <switch id="S64" livedata="selected"/>
+        <switch id="S65" livedata="selected"/>
+        <switch id="S66" livedata="selected"/>
+        <switch id="S68" livedata="selected"/>
+        <switch id="S8" livedata="selected"/>
+        <switch id="S4" livedata="selected"/>
+    </switches>
+    <externals>
+    </externals>
+</profile>
