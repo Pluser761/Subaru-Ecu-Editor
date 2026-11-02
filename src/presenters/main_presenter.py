@@ -1,47 +1,33 @@
 from __future__ import annotations
 
-import re
 import sys
 
 from pathlib import Path
 
-from PyQt6.QtCore import QProcess, Qt, QTimer
+from PyQt6.QtCore import QProcess, QTimer
 
 from src.ai.notes import NoteKey, NotesStore
 from src.ai.server import DEFAULT_PORT
 from src.ai.tools import EditProposal
 from src.i18n import Language, tr
 from src.presenters.ai_presenter import AiPresenter
+from src.presenters.controllers import SaveController, SwitchesController, TransferController
 from src.core.parser import EcuParser
-from src.core.models import CalibrationTable, Checkpoint
+from src.core.models import Axis, CalibrationTable, Checkpoint
 from src.core.session import RomSession
-from src.core.units import TableUnits, UnitSystem
-from src.core.transfer import check_compatibility, plan_transfer, render_report, save_report
+from src.core.units import Conversion, TableUnits, UnitSystem
 from src.core.xml_reader import EcuDefsRepository
 from src.logger.presenter import LoggerPresenter, RomInfo
 from src.logger.ui.window import LoggerWindow
 from src.ui.app_settings import AppSettings
+from src.ui.axes import axis_orientation
 from src.ui.main_window import MainWindow
 from src.ui.map.cells import describe_shape
 from src.ui.map.window import MapWindow
-from src.ui.switches_window import SwitchesWindow
 
 DEFAULT_DEFS = Path(__file__).resolve().parents[2] / "definitions" / "editor" / "ecu_defs.xml"
 # Дополнения из сборки: таблицы, которых нет в ecu_defs.xml (core.xml_reader.EcuDefsRepository)
 DEFAULT_EXTRA_DEFS = DEFAULT_DEFS.parent / "extra"
-
-
-_VERSION_SUFFIX = re.compile(r"[_-][vV](\d+)$")
-
-
-def next_save_stem(stem: str) -> str:
-    """Имя для «Save As»: `…_v14`/`…-v14` → `…_v15`/`…-v15` (ширина номера сохраняется), иначе `…-edited`."""
-    match = _VERSION_SUFFIX.search(stem)
-    if match:
-        digits = match.group(1)
-        number = str(int(digits) + 1).zfill(len(digits))
-        return f"{stem[:match.start(1)]}{number}"
-    return stem if stem.endswith("-edited") else f"{stem}-edited"
 
 
 class MainPresenter:
@@ -68,26 +54,27 @@ class MainPresenter:
         self._defs_repo: EcuDefsRepository | None = None
         # Карты, ждущие перепроверки «изменена ли» (отметка в дереве) — отложенно, пачкой
         self._to_check: set[str] = set()
-        # Куда пишет Save; None — ещё не сохраняли в этой сессии: первый Save спросит путь,
-        # чтобы случайно не перезаписать стоковую прошивку
-        self._save_path: str | None = None
-        # Окно «Ошибки и переключатели» и состояния переключателей на момент открытия файла
-        self._switches_window: SwitchesWindow | None = None
-        self._switch_original: dict[str, str | None] = {}
         # Заметки о прошивках для ИИ — рядом с settings.ini; без настроек — нет и заметок
         self._notes = NotesStore(settings.notes_dir) if settings is not None else None
         # Единицы на экране; ROM, сессия и checkpoint — всегда в единицах definitions
         self._units_system = settings.unit_system() if settings is not None else UnitSystem.DEFINITIONS
 
-        window.on_open_rom = self.open_rom
-        window.on_save_rom = self.save_rom
-        window.on_save_rom_as = self.save_rom_as
-        window.on_close_requested = self._confirm_discard
-        window.on_transfer_maps = self.transfer_maps
-        window.on_show_switches = self.show_switches
-        window.on_revert_all = self.revert_all
-        window.on_unit_system = self.set_unit_system
-        window.on_language = self.set_language
+        # Подсистемы, вынесенные из презентера
+        self._save = SaveController(window, lambda: self._session, settings, self._notes)
+        self._transfer = TransferController(
+            window, lambda: self._session, self._defs_path, self._ensure_defs, self._display, self._check_changed
+        )
+        self._switches = SwitchesController(window, lambda: self._session)
+
+        window.open_rom_requested.connect(self.open_rom)
+        window.save_rom_requested.connect(self._save.save)
+        window.save_rom_as_requested.connect(self._save.save_as)
+        window.on_close_requested = self._save.confirm_discard
+        window.transfer_maps_requested.connect(self._transfer.run)
+        window.show_switches_requested.connect(self._switches.show)
+        window.revert_all_requested.connect(self.revert_all)
+        window.unit_system_requested.connect(self.set_unit_system)
+        window.language_requested.connect(self.set_language)
         # ИИ: MCP-сервер в этом же процессе — видит открытую сессию, правки подтверждает пользователь
         self._ai = AiPresenter(
             window,
@@ -97,16 +84,14 @@ class MainPresenter:
             on_show_map=self.select_map,
             notes=self._notes,
         )
-        window.on_ai_server = self.set_ai_server
-        window.on_ai_help = lambda: window.show_ai_help(self._ai.url, self._ai.running)
-        window.on_ai_notes = self.show_notes
-        window.on_open_defs_folder = self.open_defs_folder
-        window.on_open_logger = self.open_logger
+        window.ai_server_toggled.connect(self.set_ai_server)
+        window.ai_help_requested.connect(lambda: window.show_ai_help(self._ai.url, self._ai.running))
+        window.ai_notes_requested.connect(self.show_notes)
+        window.open_defs_folder_requested.connect(self.open_defs_folder)
+        window.open_logger_requested.connect(self.open_logger)
         # Логгер — отдельное окно, создаётся при первом открытии
         self._logger: LoggerPresenter | None = None
         window.set_unit_system_checked(self._units_system)
-        window.on_show_editor = window.show_editor
-        window.on_show_tools = window.show_tools
 
         editor = window.editor_view
         editor.map_selected.connect(self.select_map)
@@ -162,7 +147,7 @@ class MainPresenter:
         self._window.set_status(tr("{xmlid}: карт {n}", xmlid=xmlid, n=len(maps)))
 
     def open_rom(self) -> None:
-        if not self._confirm_discard():
+        if not self._save.confirm_discard():
             return
         path = self._window.ask_open_rom_path()
         if not path:
@@ -185,10 +170,8 @@ class MainPresenter:
 
         self._window.editor_view.close_all_maps()
         self._session = RomSession(parser)
-        self._save_path = None
-        self._switch_original = {s.id: s.state for s in parser.list_switches()}
-        if self._switches_window is not None and self._switches_window.isVisible():
-            self._fill_switches()
+        self._save.reset_path()
+        self._switches.reset()
         self._to_check.clear()
         self._window.editor_view.set_changed_maps(set())
         self._window.set_rom_path(path)
@@ -200,162 +183,6 @@ class MainPresenter:
         if self._settings is not None:
             self._settings.set_last_rom_path(path)
         return True
-
-    def transfer_maps(self) -> None:
-        """Перенос выбранных карт из донорской прошивки B в открытую A."""
-        if not self._parser.file_path or self._parser.definition is None:
-            self._window.show_info(tr("Перенос карт"), tr("Сначала откройте целевую прошивку (A)."))
-            return
-        path = self._window.ask_donor_rom_path()
-        if not path:
-            return
-        try:
-            donor = EcuParser.open_rom(path, self._defs_path, defs_repo=self._ensure_defs())
-        except Exception as exc:  # noqa: BLE001
-            self._window.set_error(tr("Донор (B): {error}", error=exc))
-            return
-        reason = check_compatibility(donor, self._parser)
-        if reason:
-            self._window.set_error(reason)
-            self._window.show_info(tr("Перенос карт"), reason)
-            return
-
-        plan = plan_transfer(donor, self._parser)
-        names = self._window.ask_transfer_selection(plan)
-        if not names:
-            return
-
-        editor = self._window.editor_view
-        try:
-            report = self._session.transfer(donor, names, plan)
-        except Exception as exc:  # noqa: BLE001
-            self._window.set_error(tr("Перенос не выполнен: {error}", error=exc))
-            return
-        # Открытые окна показывают перенесённые значения
-        for map_id in editor.open_maps():
-            editor.reload_map(*self._display(map_id))
-        self._check_changed(*report.before)
-
-        markdown = render_report(report)
-        report_file: Path | None = None
-        try:
-            saved = save_report(report)
-        except OSError as exc:
-            self._window.set_error(tr("Отчёт не сохранён: {error}", error=exc))
-        else:
-            report_file = saved
-            self._window.set_status(
-                tr(
-                    "Перенесено из {source}: таблиц {n} · отчёт {report}",
-                    source=report.source_id,
-                    n=len(report.before),
-                    report=saved.name,
-                )
-            )
-        self._window.show_transfer_report(markdown, report_file)
-
-    def save_rom(self) -> bool:
-        """Сохранить в файл этой сессии; в первый раз — спросить путь. True — сохранено."""
-        if self._save_path is None:
-            return self.save_rom_as()
-        return self._save_to(self._save_path)
-
-    def save_rom_as(self) -> bool:
-        if not self._can_save():
-            return False
-        current = Path(self._parser.file_path or "rom.hex")
-        path = self._window.ask_save_rom_path(str(current.with_name(f"{next_save_stem(current.stem)}{current.suffix}")))
-        if not path:
-            return False
-        return self._save_to(path)
-
-    def _can_save(self) -> bool:
-        if not self._parser.file_path:
-            self._window.show_info(tr("Сохранение"), tr("Сначала откройте ROM."))
-            return False
-        if self._session.save_blocker:
-            self._window.set_error(self._session.save_blocker)
-            self._window.show_info(tr("Сохранение"), self._session.save_blocker)
-            return False
-        return True
-
-    def _save_to(self, path: str) -> bool:
-        if not self._can_save():
-            return False
-        old_key = self._note_key()
-        try:
-            fixed = self._session.save(path)
-        except (OSError, ValueError) as exc:
-            self._window.set_error(tr("Не сохранено: {error}", error=exc))
-            self._window.show_info(tr("Сохранение"), tr("Не сохранено: {error}", error=exc))
-            return False
-        self._save_path = path
-        # Заметки ИИ привязаны к имени файла — новое имя получает копию
-        new_key = self._note_key()
-        if self._notes is not None and old_key is not None and new_key is not None:
-            try:
-                self._notes.copy(old_key, new_key)
-            except OSError as exc:
-                self._window.set_error(tr("Заметки не скопированы: {error}", error=exc))
-        self._window.set_rom_path(path, modified=False)
-        definition = self._parser.definition
-        self._window.editor_view.set_rom_info(path, definition.romid if definition else None)
-        if self._settings is not None:
-            self._settings.set_last_rom_path(path)
-        self._window.set_status(
-            tr("Сохранено: {name} · контрольных сумм пересчитано: {fixed}", name=Path(path).name, fixed=fixed)
-        )
-        return True
-
-    def _confirm_discard(self) -> bool:
-        """Можно ли бросить текущий образ (закрытие, открытие другого ROM): нет правок, их
-        сохранили или пользователь отказался от них."""
-        if not self._session.dirty:
-            return True
-        answer = self._window.ask_unsaved_changes()
-        if answer == "save":
-            return self.save_rom()
-        return answer == "discard"
-
-    def show_switches(self) -> None:
-        """Окно «Ошибки и переключатели» (таблицы Switch: DTC, OBD-II…)."""
-        if not self._parser.file_path:
-            self._window.show_info(tr("Ошибки и переключатели"), tr("Сначала откройте ROM."))
-            return
-        if self._switches_window is None:
-            self._switches_window = SwitchesWindow(self._window)
-            self._switches_window.switch_toggled.connect(self.on_switch_toggled)
-            # По центру экрана, а не по центру узкого главного окна (иначе уезжает за край)
-            screen = self._window.screen()
-            if screen is not None:
-                area = screen.availableGeometry()
-                size = self._switches_window.size()
-                self._switches_window.move(
-                    area.x() + (area.width() - size.width()) // 2, area.y() + (area.height() - size.height()) // 2
-                )
-        self._fill_switches()
-        self._switches_window.show()
-        self._switches_window.raise_()
-        self._switches_window.activateWindow()
-
-    def _fill_switches(self) -> None:
-        assert self._switches_window is not None
-        self._switches_window.set_switches(
-            self._parser.list_switches(), self._switch_original, Path(self._parser.file_path or "").name
-        )
-
-    def on_switch_toggled(self, switch_id: str, state: str) -> None:
-        try:
-            self._session.write_switch(switch_id, state)
-        except ValueError as exc:
-            self._window.set_error(tr("Не удалось переключить: {error}", error=exc))
-        info = self._parser.switch_info(switch_id)
-        if self._switches_window is not None:
-            self._switches_window.update_switch(info)
-        self._window.setWindowModified(self._session.dirty)
-        label = info.code or info.name
-        word = {"on": tr("включена"), "off": tr("выключена")}.get(info.state or "", "?")
-        self._window.set_status(f"{label}: {word}")
 
     def select_map(self, map_id: str) -> None:
         """Открыть окно карты или поднять уже открытое (фокус остаётся в дереве)."""
@@ -453,44 +280,43 @@ class MainPresenter:
         stored = units.value_display(stored_def)
         editor.update_cell(map_id, row, col, stored)
         self._check_changed(map_id)
-        d = units.value.decimals if units.value else 2
-        note = "" if round(stored, d) == round(value, d) else " " + tr("(введено {value})", value=f"{value:.{d}f}")
+        d = _decimals(units.value)
+        note = "" if round(stored, d) == round(value, d) else " " + tr("(введено {value})", value=_fmt(value, d))
         self._window.set_status(
-            tr("Изменено [{map}] ({row}, {col}) = {value}", map=map_id, row=row, col=col, value=f"{stored:.{d}f}")
+            tr("Изменено [{map}] ({row}, {col}) = {value}", map=map_id, row=row, col=col, value=_fmt(stored, d))
             + note
         )
 
     def on_x_axis_changed(self, map_id: str, col: int, value: float) -> None:
-        self._on_axis_changed(map_id, "x", col, value)
+        self._on_axis_changed(map_id, Axis.X, col, value)
 
     def on_y_axis_changed(self, map_id: str, row: int, value: float) -> None:
-        self._on_axis_changed(map_id, "y", row, value)
+        self._on_axis_changed(map_id, Axis.Y, row, value)
 
-    def _on_axis_changed(self, map_id: str, axis: str, index: int, value: float) -> None:
+    def _on_axis_changed(self, map_id: str, axis: Axis, index: int, value: float) -> None:
         editor = self._window.editor_view
         units = self._units(map_id)
         try:
             result = self._session.write_axis(map_id, axis, index, units.axis_definition(axis, value))
         except Exception as exc:  # noqa: BLE001
             self._window.set_error(
-                tr("Не удалось записать ось {axis}[{index}]: {error}", axis=axis.upper(), index=index, error=exc)
+                tr("Не удалось записать ось {axis}[{index}]: {error}", axis=axis.name, index=index, error=exc)
             )
             current = units.axis_display(axis, self._parser.read_axis(map_id, axis, index))
-            editor.update_axis(map_id, _orientation(axis), index, current)
+            editor.update_axis(map_id, axis_orientation(axis), index, current)
             return
         stored = units.axis_display(axis, result.stored)
-        editor.update_axis(map_id, _orientation(axis), index, stored)
+        editor.update_axis(map_id, axis_orientation(axis), index, stored)
         # Открытые окна карт на той же оси показывают её новое значение (у них это может быть
         # другая ось: X вместо Y) — в своих единицах
         for name, kind in result.shared:
-            editor.update_axis(name, _orientation(kind), index, self._units(name).axis_display(kind, result.stored))
+            editor.update_axis(name, axis_orientation(kind), index, self._units(name).axis_display(kind, result.stored))
         self._check_changed(map_id, *(name for name, _ in result.shared))
         shared = result.shared
         note = " — " + tr("ось общая, изменилась и у других таблиц: {n}", n=len(shared)) if shared else ""
-        conv = units.axis(axis)
-        d = conv.decimals if conv else 2
+        d = _decimals(units.axis(axis))
         self._window.set_status(
-            tr("Ось {axis} [{map}] {index} = {value}", axis=axis.upper(), map=map_id, index=index, value=f"{stored:.{d}f}")
+            tr("Ось {axis} [{map}] {index} = {value}", axis=axis.name, map=map_id, index=index, value=_fmt(stored, d))
             + note
         )
 
@@ -617,7 +443,7 @@ class MainPresenter:
         """View → Язык: сохранить; применяется перезапуском (с обычной проверкой правок)."""
         if self._settings is not None:
             self._settings.set_language(language)
-        if self._window.ask_restart_for_language() and self._confirm_discard():
+        if self._window.ask_restart_for_language() and self._save.confirm_discard():
             # Правки уже сохранены или отброшены — закрытие без повторного вопроса
             self._window.on_close_requested = None
             QProcess.startDetached(sys.executable, sys.argv)
@@ -636,6 +462,11 @@ class MainPresenter:
         self._window.set_status(message)
 
 
-def _orientation(axis: str) -> Qt.Orientation:
-    """Ось карты в ROM → ориентация: "x" — Horizontal, "y" — Vertical."""
-    return Qt.Orientation.Horizontal if axis == "x" else Qt.Orientation.Vertical
+def _decimals(conv: Conversion | None) -> int:
+    """Знаков после точки на экране для величины; без пересчёта единиц — 2."""
+    return conv.decimals if conv is not None else 2
+
+
+def _fmt(value: float, decimals: int) -> str:
+    """Число в том виде, как в статусбаре (по знакам отображения величины)."""
+    return f"{value:.{decimals}f}"

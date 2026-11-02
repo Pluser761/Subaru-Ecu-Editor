@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import struct
 from functools import lru_cache
 
@@ -65,10 +64,7 @@ def read_raw_values(
                 f"ROM truncated: need {end} bytes for value at 0x{address:X}"
             )
         chunk = rom[start:end]
-        if size == 1:
-            (raw,) = struct.unpack(fmt, chunk)
-        else:
-            (raw,) = struct.unpack(fmt, chunk)
+        (raw,) = struct.unpack(fmt, chunk)
         out.append(float(raw))
     return out
 
@@ -225,46 +221,93 @@ def encode_value(
     storagetype: str,
     current_raw: float,
 ) -> float:
-    """Физическое значение → сырое для записи в ROM.
+    """Физическое значение → сырое для записи одной ячейки/точки оси (со «сдвигом»)."""
+    (raw,) = encode_values(np.array([value]), scaling, storagetype, np.array([current_raw]), nudge=True)
+    return float(raw)
 
-    Целые до 16 бит: берём сырое значение, чей пересчёт ближе всего к value.
-    Если ближайшим оказалось текущее, а value отличается от текущего на экране,
-    сдвигаемся на соседнее представимое значение в нужную сторону — иначе мелкий
-    шаг на грубой шкале (например, AFR в uint8) «застревал» бы на месте.
-    float / uint32: обратная формула to_byte из definition.
+
+def encode_values(
+    values: np.ndarray,
+    scaling: Scaling | None,
+    storagetype: str,
+    current_raw: np.ndarray,
+    *,
+    nudge: bool = False,
+) -> np.ndarray:
+    """Физические значения → сырые для записи в ROM.
+
+    Целые до 16 бит — ближайшее представимое по expression. nudge=True (правка одной ячейки)
+    добавляет «сдвиг от застревания»: если ближайшим оказалось текущее сырое, а значение на
+    экране отличается, берётся соседнее в нужную сторону — иначе мелкий шаг на грубой шкале
+    (например, AFR в uint8) не двигался бы. float / uint32 — обратная формула to_byte.
+    Нечисловые значения (inf/nan) оставляют текущее сырое значение.
     """
     st = storagetype.lower()
+    v = np.asarray(values, dtype=float).ravel()
+    out = np.asarray(current_raw, dtype=float).ravel().copy()
+    ok = np.isfinite(v)
+    if not ok.any():
+        return out
+
     expression = scaling.expression if scaling and scaling.expression else "x"
     to_byte = scaling.to_byte if scaling and scaling.to_byte else "x"
 
     if _uses_lookup(st):
         raws, phys = _raw_lookup(expression, st)
-        lo = _INT_RANGES[st][0]
-        current = int(current_raw)
-        current_phys = float(phys[current - lo])
-        if round(value, _DISPLAY_DECIMALS) == round(current_phys, _DISPLAY_DECIMALS):
-            return float(current)
         finite = np.isfinite(phys)
-        if not finite.any():
+        if nudge and not finite.any():
             raise ValueError(tr("Scaling «{expression}» не даёт конечных значений", expression=expression))
-        distance = np.where(finite, np.abs(phys - value), np.inf)
-        best = int(raws[int(np.argmin(distance))])
-        if best == current:
-            direction = 1.0 if value > current_phys else -1.0
-            step = (phys - current_phys) * direction
-            ahead = finite & (step > 0)
-            if not ahead.any():
-                return float(current)  # уже на границе диапазона типа
-            best = int(raws[int(np.argmin(np.where(ahead, step, np.inf)))])
-        return float(best)
+        out[ok] = _lookup_nearest(v[ok], raws, phys, finite, _INT_RANGES[st][0], out[ok], nudge)
+        return out
 
-    raw = eval_expression(to_byte, value)
-    if not math.isfinite(raw):
-        raise ValueError(tr("Значение {value} не переводится в байты (to_byte «{to_byte}»)", value=value, to_byte=to_byte))
+    raw = eval_expression_array(to_byte, v)
+    if nudge:
+        bad = ~np.isfinite(raw[ok])
+        if bad.any():
+            value = float(v[ok][np.argmax(bad)])
+            raise ValueError(tr("Значение {value} не переводится в байты (to_byte «{to_byte}»)", value=value, to_byte=to_byte))
+    else:
+        ok &= np.isfinite(raw)
     if st in _INT_RANGES:
-        lo, hi = _INT_RANGES[st]
-        return float(min(max(round(raw), lo), hi))
-    return raw
+        lo_i, hi_i = _INT_RANGES[st]
+        raw = np.clip(np.round(raw), lo_i, hi_i)
+    out[ok] = raw[ok]
+    return out
+
+
+def _lookup_nearest(
+    target: np.ndarray,
+    raws: np.ndarray,
+    phys: np.ndarray,
+    finite: np.ndarray,
+    lo: int,
+    current: np.ndarray,
+    nudge: bool,
+) -> np.ndarray:
+    """Ближайшее сырое значение к каждому из target; nudge — сдвиг от застревания."""
+    order = np.argsort(phys[finite], kind="stable")
+    sorted_phys = phys[finite][order]
+    sorted_raws = raws[finite][order]
+    idx = np.searchsorted(sorted_phys, target)
+    left = np.clip(idx - 1, 0, len(sorted_phys) - 1)
+    right = np.clip(idx, 0, len(sorted_phys) - 1)
+    closer_right = np.abs(sorted_phys[right] - target) < np.abs(sorted_phys[left] - target)
+    best = np.where(closer_right, sorted_raws[right], sorted_raws[left])
+    if not nudge:
+        return best
+
+    current_int = current.astype(int)
+    current_phys = phys[current_int - lo]
+    same_display = np.round(target, _DISPLAY_DECIMALS) == np.round(current_phys, _DISPLAY_DECIMALS)
+    result = np.where(same_display, current_int, best)
+    stuck = ~same_display & (best == current_int)
+    if stuck.any():
+        direction = np.where(target > current_phys, 1.0, -1.0)
+        step = (phys[None, :] - current_phys[:, None]) * direction[:, None]
+        ahead = finite[None, :] & (step > 0)
+        nudge_idx = np.argmin(np.where(ahead, step, np.inf), axis=1)
+        result = np.where(stuck & ahead.any(axis=1), raws[nudge_idx], result)
+    return result
 
 
 def _write_raw(rom: bytearray, address: int, storagetype: str, endian: str, raw: float) -> None:
@@ -315,49 +358,6 @@ def write_axis_value(rom: bytearray, axis: AxisDef | None, index: int, value: fl
 
 
 # --- Пакетная запись (перенос карт) --------------------------------------------
-
-
-def encode_values(
-    values: np.ndarray,
-    scaling: Scaling | None,
-    storagetype: str,
-    current_raw: np.ndarray,
-) -> np.ndarray:
-    """Физические значения → сырые, всегда в ближайшее представимое (без «сдвига»).
-
-    Нечисловые значения (inf/nan, например деление на 0 в scaling донора)
-    оставляют текущее сырое значение.
-    """
-    st = storagetype.lower()
-    v = np.asarray(values, dtype=float).ravel()
-    out = np.asarray(current_raw, dtype=float).ravel().copy()
-    ok = np.isfinite(v)
-    if not ok.any():
-        return out
-
-    if _uses_lookup(st):
-        expression = scaling.expression if scaling and scaling.expression else "x"
-        raws, phys = _raw_lookup(expression, st)
-        finite = np.isfinite(phys)
-        order = np.argsort(phys[finite], kind="stable")
-        sorted_phys = phys[finite][order]
-        sorted_raws = raws[finite][order]
-        target = v[ok]
-        idx = np.searchsorted(sorted_phys, target)
-        lo = np.clip(idx - 1, 0, len(sorted_phys) - 1)
-        hi = np.clip(idx, 0, len(sorted_phys) - 1)
-        pick = np.where(np.abs(sorted_phys[hi] - target) < np.abs(sorted_phys[lo] - target), hi, lo)
-        out[ok] = sorted_raws[pick]
-        return out
-
-    to_byte = scaling.to_byte if scaling and scaling.to_byte else "x"
-    raw = eval_expression_array(to_byte, v)
-    ok &= np.isfinite(raw)
-    if st in _INT_RANGES:
-        lo_i, hi_i = _INT_RANGES[st]
-        raw = np.clip(np.round(raw), lo_i, hi_i)
-    out[ok] = raw[ok]
-    return out
 
 
 def _write_block(

@@ -10,6 +10,7 @@ from PyQt6.QtCore import QAbstractTableModel, QModelIndex, QObject, Qt, pyqtSign
 from src.i18n import tr
 from src.core.checkpoint import baseline, diff_sign, epsilon_for
 from src.core.models import CalibrationTable, Checkpoint, Scaling
+from src.ui.axes import orientation_axis
 from src.ui.map.cells import change_tooltip, format_cell_value, parse_cell_value
 
 _ALIGN_RIGHT = int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -212,8 +213,7 @@ class MapTableModel(QAbstractTableModel):
         """То же для точки оси; у статических осей изменений не бывает."""
         if self._checkpoint is None or self.is_static(orientation):
             return 0
-        horizontal = orientation == Qt.Orientation.Horizontal
-        base_axis = self._checkpoint.x_axis if horizontal else self._checkpoint.y_axis
+        base_axis = self._checkpoint.axis_values(orientation_axis(orientation))
         if not 0 <= index < len(base_axis):
             return 0
         return diff_sign(self._axes[orientation][index], base_axis[index], epsilon_for(self._axis_decimals[orientation]))

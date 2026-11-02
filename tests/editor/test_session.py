@@ -2,6 +2,7 @@
 
 import pytest
 
+from src.core.models import Axis
 from src.core.parser import EcuParser
 from src.core.session import RomSession
 from src.core.transfer import plan_transfer
@@ -26,7 +27,7 @@ def test_cell_write_marks_changed_and_dirty(session: RomSession):
 
 def test_shared_axis_snapshots_untouched_tables_before_write(session: RomSession):
     before = session.parser.load_table(IDLE_C).y_axis[4]
-    result = session.write_axis(IDLE_A, "y", 4, 40.0)
+    result = session.write_axis(IDLE_A, Axis.Y, 4, 40.0)
     assert {name for name, _ in result.shared} == {"Idle Speed Target B", IDLE_C}
     # C не открывали, но её checkpoint — ось до правки, поэтому она отмечена изменённой
     assert session.checkpoint(IDLE_C).y_axis[4] == before
@@ -45,7 +46,7 @@ def test_revert_restores_rom_bytes(session: RomSession):
     session.checkpoint(BOOST)
     session.write_cell(BOOST, 0, 5, 1.5)
     session.write_cell(BOOST, 2, 3, 0.3)
-    session.write_axis(IDLE_A, "y", 4, 40.0)
+    session.write_axis(IDLE_A, Axis.Y, 4, 40.0)
     touched = session.revert()
     # Откат оси затрагивает и соседей по ней
     assert {BOOST, IDLE_A, "Idle Speed Target B", IDLE_C} <= touched
