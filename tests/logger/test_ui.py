@@ -199,11 +199,11 @@ def test_silent_adapter_suggests_usb_replug(logger: LoggerPresenter) -> None:
     runner.link.lost_since = time.monotonic()
     runner.link.last_error = OpenPortError("OpenPort: no reply to ati", NO_REPLY)
 
-    runner.link.attempts = 2
+    runner.link.attempts = 5
     logger._refresh()
     assert "не отвечает" in window._status.text() and "выдерните" not in window._status.text()
 
-    runner.link.attempts = 3  # три попытки подряд молчит — сброс не помогает, нужен USB
+    runner.link.attempts = 6  # шесть попыток подряд молчит — сброс не помогает, нужен USB
     logger._refresh()
     assert "выдерните" in window._status.text()
 

@@ -39,7 +39,8 @@ LOGGER_PROFILES = LOGGER_DEFS.parent / "profiles"
 EMULATOR_PORT = "emulator"
 UI_HZ = 10
 # Неудачных попыток переподключения, после которых подсказываем выдернуть USB
-REPLUG_AFTER = 3
+# (адаптер иногда поднимается сам на 4–8-й попытке — не дёргать USB раньше времени)
+REPLUG_AFTER = 6
 
 log = logging.getLogger(__name__)
 
