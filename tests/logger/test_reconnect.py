@@ -107,6 +107,27 @@ def test_without_reconnect_error_stops(defs: LoggerDefs) -> None:
     runner.stop()
 
 
+def test_reconnect_attempt_failures_are_noted(defs: LoggerDefs) -> None:
+    """Неудачные попытки переподключения пишутся в note с причиной; last_error — исключение."""
+    port = FakeOpenPort()
+    adapter = Adapter(lambda: port, reset_pause=0)
+    notes: list[str] = []
+    errors: list[Exception] = []
+    runner = LoggerRunner(Poller(adapter.open().connection, defs), lambda s: None, errors.append,
+                          min_period=0.005, reconnect=adapter.reopen, retry_pause=0.01, note=notes.append)
+    runner.select([("P8", None)])
+    runner.start()
+    try:
+        port.silent = True
+        _wait(lambda: runner.link.attempts >= 2)
+    finally:
+        runner.stop()
+        adapter.close()
+    assert not errors
+    assert runner.link.last_error is not None and "no reply to ati" in str(runner.link.last_error)
+    assert any("reconnect attempt" in n and "no reply to ati" in n for n in notes)
+
+
 def test_reopen_resets_adapter() -> None:
     """Переподключение сбрасывает адаптер (atz) — как и закрытие, но без close_all."""
     port = FakeOpenPort()

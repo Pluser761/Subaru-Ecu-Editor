@@ -51,7 +51,7 @@ class LinkStats:
     downtime: float = 0.0  # с без связи, по закончившимся обрывам
     lost_since: float | None = None  # time.monotonic() начала текущего обрыва
     attempts: int = 0  # попыток переподключения в текущем обрыве
-    last_error: str = ""
+    last_error: Exception | None = None  # причина обрыва или последней неудачной попытки
 
 
 @dataclass
@@ -72,14 +72,17 @@ class LoggerRunner:
         min_period: float = MIN_PERIOD,
         reconnect: Callable[[str], Connection] | None = None,
         retry_pause: float = RETRY_PAUSE,
+        note: Callable[[str], None] | None = None,
     ) -> None:
-        """reconnect(причина) — новое подключение после обрыва (Adapter.reopen)."""
+        """reconnect(причина) — новое подключение после обрыва (Adapter.reopen);
+        note(событие) — куда писать события обрыва/переподключения (Adapter.note)."""
         self.poller = poller
         self._on_sample = on_sample
         self._on_error = on_error
         self._min_period = min_period
         self._reconnect = reconnect
         self._retry_pause = retry_pause
+        self._note = note or (lambda _text: None)
         self.link = LinkStats()
         self._flushed = 0.0
         self._stopped = threading.Event()
@@ -248,14 +251,15 @@ class LoggerRunner:
         link.drops += 1
         link.lost_since = since
         link.attempts = 0
-        link.last_error = str(error)
+        link.last_error = error
         reason = str(error)
         while self._running.is_set():
             link.attempts += 1
             try:
                 connection = self._reconnect(reason)
             except Exception as exc:  # noqa: BLE001 — адаптер ещё не вернулся
-                link.last_error = str(exc)
+                link.last_error = exc
+                self._note(f"reconnect attempt {link.attempts} failed: {exc}")
                 if self._stopped.wait(self._retry_pause):
                     return False
                 continue
@@ -263,7 +267,9 @@ class LoggerRunner:
                 return False
             with self._lock:
                 self.poller.reconnect(connection)
-            link.downtime += time.monotonic() - since
+            downtime = time.monotonic() - since
+            link.downtime += downtime
             link.lost_since = None
+            self._note(f"link restored after {link.attempts} attempt(s) in {downtime:.1f} s")
             return True
         return False

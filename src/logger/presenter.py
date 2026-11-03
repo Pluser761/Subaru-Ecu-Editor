@@ -14,7 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices
 
 from src.i18n import N_, tr
 from src.logger.core.adapter import Adapter
@@ -27,6 +28,7 @@ from src.logger.core.session import Connection, DtcReading, Poller, Sample, conn
 from src.logger.core.trace import Trace
 from src.logger.core.transport.emulator import FakeEcu, FakeOpenPort, demo_memory
 from src.logger.core.transport.op2 import NO_REPLY, ByteStream, OpenPortError
+from src.logger.core.transport.serial_port import OpenPortNotFound
 from src.logger.ui.window import DtcRow, LiveRow, LoggerWindow, ParamRow
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -106,6 +108,7 @@ class LoggerPresenter:
         self.connection: Connection | None = None
         self._status = ""  # строка состояния подключения (без обрывов)
         self._shown_status = ""
+        self._trace_path: Path | None = None  # текущий trace-файл (для показа в ошибке)
         self.runner: LoggerRunner | None = None
         self._supported: set[str] | None = None  # None — не подключены, показываем всё
         self._units: dict[str, str] = {}  # выбранные единицы (переживают перестройку дерева)
@@ -136,6 +139,7 @@ class LoggerPresenter:
         w.open_profile_requested.connect(self._open_profile)
         w.save_profile_requested.connect(self._save_profile)
         w.choose_folder_requested.connect(self._choose_folder)
+        w.open_logs_requested.connect(self._open_logs)
         w.dtc_read_requested.connect(self.read_dtc)
         w.dtc_clear_requested.connect(self.clear_dtc)
         w.closed.connect(self.disconnect)
@@ -153,6 +157,7 @@ class LoggerPresenter:
 
     def connect(self, port: str) -> None:
         self.disconnect()
+        self._trace_path = None
         if port == EMULATOR_PORT:
             # Как на машине: RAM по CAN не отдаётся, K-line отвечает с задержкой
             adapter = Adapter(
@@ -168,7 +173,9 @@ class LoggerPresenter:
         except Exception as exc:  # noqa: BLE001 — показать в окне; порт закрыть
             self._close_port()
             self.window.set_connected(False, tr("Не подключено"))
-            if isinstance(exc, OpenPortError) and exc.code == NO_REPLY:
+            if isinstance(exc, OpenPortNotFound):
+                self.window.set_error(tr("OpenPort 2.0 не найден — проверьте USB-подключение"))
+            elif isinstance(exc, OpenPortError) and exc.code == NO_REPLY:
                 self.window.set_error(tr("Адаптер не отвечает — отключите и снова подключите его USB"))
             else:
                 self.window.set_error(tr("Не удалось подключиться: {error}", error=exc))
@@ -178,7 +185,7 @@ class LoggerPresenter:
         self._supported = {p.id for p in self.defs.supported(self.connection.init)}
         self.runner = LoggerRunner(
             Poller(self.connection, self.defs), self._bridge.sample.emit, self._bridge.error.emit,
-            reconnect=adapter.reopen,
+            reconnect=adapter.reopen, note=adapter.note,
         )
         selected = self.window.selected()
         self._fill_tree({pid for pid, _units in selected})
@@ -222,13 +229,20 @@ class LoggerPresenter:
             return None
         folder = self._settings.logger_trace_dir
         folder.mkdir(parents=True, exist_ok=True)
-        return Trace.to_file(folder / f"trace_{datetime.now():%Y%m%d_%H%M%S}.log")
+        self._trace_path = folder / f"trace_{datetime.now():%Y%m%d_%H%M%S}.log"
+        return Trace.to_file(self._trace_path)
 
     def _current_path(self, port: str) -> str:
         """Путь порта для (пере)открытия: после сброса адаптер может появиться под другим
-        именем — тогда берётся единственный найденный OpenPort."""
+        именем — тогда берётся единственный найденный OpenPort; нет ни одного — нет адаптера."""
         ports = self._find_ports()
-        return ports[0] if port not in ports and len(ports) == 1 else port
+        if port in ports:
+            return port
+        if len(ports) == 1:
+            return ports[0]
+        if not ports:
+            raise OpenPortNotFound(f"OpenPort 2.0 not found on USB (was {port})")
+        return port  # несколько портов — не угадываем; pyserial даст обычную ошибку
 
     def _close_port(self) -> None:
         # Каналы закрыть, адаптер сбросить — не оставлять его с открытым CAN и фильтрами
@@ -286,8 +300,12 @@ class LoggerPresenter:
             self.window.flash_mark(sample.time_ms / 1000)
 
     def _on_error(self, error: Exception) -> None:
+        path = self._trace_path
         self.disconnect()
-        self.window.set_error(tr("Связь с ЭБУ потеряна: {error}", error=error))
+        text = tr("Связь с ЭБУ потеряна: {error}", error=error)
+        if path is not None:
+            text += " · " + tr("журнал: {path}", path=str(path))
+        self.window.set_error(text)
 
     def _refresh(self) -> None:
         sample, runner = self._latest, self.runner
@@ -317,9 +335,12 @@ class LoggerPresenter:
     def _show_link(self, runner: LoggerRunner) -> None:
         """Строка состояния: обрыв идёт — сколько длится и какая попытка; после — счётчик."""
         link = runner.link
+        hint = self._reconnect_hint(link.last_error)
         if link.lost_since is not None:
             text = tr("Связь потеряна {seconds} с назад — переподключение, попытка {n}",
                       seconds=f"{time.monotonic() - link.lost_since:.0f}", n=link.attempts)
+            if hint:
+                text += " · " + hint
             if text != self._shown_status:
                 self._shown_status = text
                 self.window.set_error(text)
@@ -328,9 +349,19 @@ class LoggerPresenter:
         if link.drops:
             text += " · " + tr("обрывов: {n}, без связи {seconds} с", n=link.drops,
                                seconds=f"{link.downtime:.0f}")
+            if hint:
+                text += " · " + hint
         if text != self._shown_status:
             self._shown_status = text
             self.window.set_connected(True, text)
+
+    def _reconnect_hint(self, error: Exception | None) -> str:
+        """Короткая подсказка о причине неудачного переподключения; иначе пусто."""
+        if isinstance(error, OpenPortNotFound):
+            return tr("OpenPort не найден в USB")
+        if isinstance(error, OpenPortError) and error.code == NO_REPLY:
+            return tr("адаптер на USB есть, но не отвечает")
+        return ""
 
     def mark(self) -> None:
         if self.runner is not None:
@@ -452,6 +483,14 @@ class LoggerPresenter:
             self._settings.set_logger_log_dir(folder)
         if folder:
             self.window.set_log_folder(str(self.log_folder()))
+
+    def _open_logs(self) -> None:
+        """Открыть папку с журналами адаптера (trace-файлы и events.log)."""
+        if self._settings is None:
+            return
+        folder = self._settings.logger_trace_dir
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     # --- Профили ---
 

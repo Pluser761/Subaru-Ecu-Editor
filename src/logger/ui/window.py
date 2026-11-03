@@ -97,6 +97,7 @@ class LoggerWindow(QWidget):
     open_profile_requested = pyqtSignal()
     save_profile_requested = pyqtSignal()
     choose_folder_requested = pyqtSignal()
+    open_logs_requested = pyqtSignal()
     dtc_read_requested = pyqtSignal()
     dtc_clear_requested = pyqtSignal()
     closed = pyqtSignal()
@@ -150,6 +151,8 @@ class LoggerWindow(QWidget):
         self._mark_flash.setStyleSheet(f"color: {MARK_COLOR}; font-weight: 600;")
         folder_btn = QPushButton(tr("Папка логов…"))
         folder_btn.clicked.connect(self.choose_folder_requested)
+        logs_btn = QPushButton(tr("Журнал адаптера…"))
+        logs_btn.clicked.connect(self.open_logs_requested)
         self._folder = QLabel("")
         self._folder.setStyleSheet("color: #555;")
         self._folder.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -159,6 +162,7 @@ class LoggerWindow(QWidget):
         record_row.addWidget(self._mark_flash)
         record_row.addSpacing(12)
         record_row.addWidget(folder_btn)
+        record_row.addWidget(logs_btn)
         record_row.addWidget(self._folder, 1)
 
         # --- Слева: выбор параметров ---

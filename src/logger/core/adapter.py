@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -25,6 +26,8 @@ from src.logger.core.transport.op2 import ByteStream, OpenPort2
 RESET_PAUSE = 2.0
 
 _last_reset = 0.0  # time.monotonic() последнего atz — общий для всех Adapter (адаптер один)
+
+log = logging.getLogger(__name__)
 
 
 class AdapterClosed(Exception):
@@ -91,6 +94,7 @@ class Adapter:
             self.trace = None
 
     def note(self, text: str) -> None:
+        log.info("adapter: %s", text)
         if self.trace is not None:
             self.trace.note(text)
 

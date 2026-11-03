@@ -14,6 +14,10 @@ OPENPORT_PID = 0xCC4D
 READ_TIMEOUT = 0.005
 
 
+class OpenPortNotFound(OSError):
+    """OpenPort 2.0 не найден среди USB-устройств (нет порта с VID/PID адаптера)."""
+
+
 def find_openport() -> list[str]:
     """Пути портов подключённых OpenPort 2.0."""
     return [p.device for p in list_ports.comports() if p.vid == OPENPORT_VID and p.pid == OPENPORT_PID]

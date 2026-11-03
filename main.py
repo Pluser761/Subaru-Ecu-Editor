@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QApplication
 
 from src.core.parser import EcuParser
 from src.i18n import Language, set_language
+from src.log_setup import setup_logging
 from src.presenters.main_presenter import MainPresenter
 from src.ui.app_settings import AppSettings
 from src.ui.main_window import MainWindow
@@ -19,6 +20,7 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(str(APP_ICON)))  # окна, панель задач, Dock при запуске из исходников
     settings = AppSettings()
+    setup_logging(settings.logger_trace_dir)  # файл событий + перехват исключений
     # Язык — до создания окон: подписи переводятся при построении виджетов
     language = settings.language()
     set_language(language)
