@@ -24,7 +24,7 @@ from src.logger.core.defs import LoggerDefs, LoggerParam
 from src.logger.core.params import decimals
 from src.logger.core.paths import default_logs_root, rom_log_dir
 from src.logger.core.profile import ProfileItem, list_profiles, load_profile, save_profile
-from src.logger.core.runner import LoggerRunner
+from src.logger.core.runner import LinkStats, LoggerRunner
 from src.logger.core.session import Connection, DtcReading, Poller, Sample, connect
 from src.logger.core.trace import Trace
 from src.logger.core.transport.emulator import FakeEcu, FakeOpenPort, demo_memory
@@ -38,6 +38,8 @@ LOGGER_EXTRA = LOGGER_DEFS.parent / "extra"
 LOGGER_PROFILES = LOGGER_DEFS.parent / "profiles"
 EMULATOR_PORT = "emulator"
 UI_HZ = 10
+# Неудачных попыток переподключения, после которых подсказываем выдернуть USB
+REPLUG_AFTER = 3
 
 log = logging.getLogger(__name__)
 
@@ -343,6 +345,8 @@ class LoggerPresenter:
         if link.lost_since is not None:
             text = tr("Связь потеряна {seconds} с назад — переподключение, попытка {n}",
                       seconds=f"{time.monotonic() - link.lost_since:.0f}", n=link.attempts)
+            if self._needs_replug(link):
+                hint = tr("адаптер завис — выдерните и вставьте USB")
             if hint:
                 text += " · " + hint
             if text != self._shown_status:
@@ -366,6 +370,15 @@ class LoggerPresenter:
         if isinstance(error, OpenPortError) and error.code == NO_REPLY:
             return tr("адаптер на USB есть, но не отвечает")
         return ""
+
+    def _needs_replug(self, link: LinkStats) -> bool:
+        """Порт открывается, а адаптер молчит несколько попыток подряд — сброс не помогает."""
+        error = link.last_error
+        return (
+            link.attempts >= REPLUG_AFTER
+            and isinstance(error, OpenPortError)
+            and error.code == NO_REPLY
+        )
 
     def mark(self) -> None:
         if self.runner is not None:

@@ -333,6 +333,7 @@ EN: dict[str, str] = {
     'OpenPort 2.0 не найден — проверьте USB-подключение': 'OpenPort 2.0 not found — check the USB connection',
     'OpenPort не найден в USB': 'OpenPort not found on USB',
     'адаптер на USB есть, но не отвечает': 'the adapter is on USB but is not responding',
+    'адаптер завис — выдерните и вставьте USB': 'the adapter is hung — unplug the USB and plug it back in',
     'Журнал адаптера…': 'Adapter Log…',
     'журнал: {path}': 'log: {path}',
     'Код': 'Code',

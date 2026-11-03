@@ -9,6 +9,7 @@ import pytest
 
 from src.logger.core.profile import ProfileItem, list_profiles, load_profile, save_profile
 from src.logger.core.session import DtcReading
+from src.logger.core.transport.op2 import NO_REPLY, OpenPortError
 from src.logger.presenter import EMULATOR_PORT, LOGGER_PROFILES, LoggerPresenter, RomInfo
 from src.logger.ui.window import DtcRow, LoggerWindow
 
@@ -186,6 +187,25 @@ def test_link_status_shows_outage_and_drops(logger: LoggerPresenter) -> None:
     runner.link.lost_since, runner.link.downtime = None, 14.2
     logger._refresh()
     assert "ЭБУ 5C42584007" in window._status.text() and "обрывов: 1, без связи 14 с" in window._status.text()
+
+
+def test_silent_adapter_suggests_usb_replug(logger: LoggerPresenter) -> None:
+    _connect_without_thread(logger)
+    runner = logger.runner
+    assert runner is not None
+    window = logger.window
+    window.set_checked({"P8": None})
+    runner.step()
+    runner.link.lost_since = time.monotonic()
+    runner.link.last_error = OpenPortError("OpenPort: no reply to ati", NO_REPLY)
+
+    runner.link.attempts = 2
+    logger._refresh()
+    assert "не отвечает" in window._status.text() and "выдерните" not in window._status.text()
+
+    runner.link.attempts = 3  # три попытки подряд молчит — сброс не помогает, нужен USB
+    logger._refresh()
+    assert "выдерните" in window._status.text()
 
 
 def test_dtc_read_then_clear(logger: LoggerPresenter, monkeypatch: pytest.MonkeyPatch) -> None:
