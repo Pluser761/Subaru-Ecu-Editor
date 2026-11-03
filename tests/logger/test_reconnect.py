@@ -125,6 +125,7 @@ def test_reconnect_attempt_failures_are_noted(defs: LoggerDefs) -> None:
         adapter.close()
     assert not errors
     assert runner.link.last_error is not None and "no reply to ati" in str(runner.link.last_error)
+    assert sum(n.startswith("link lost") for n in notes) == 1  # один обрыв — одна строка
     assert any("reconnect attempt" in n and "no reply to ati" in n for n in notes)
 
 

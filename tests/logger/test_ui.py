@@ -141,6 +141,15 @@ def test_connect_without_adapter_shows_hint(qapp, tmp_path: Path) -> None:  # ty
     assert "не найден" in presenter.window._status.text()
 
 
+def test_connect_failure_is_logged(
+    qapp, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:  # type: ignore[no-untyped-def]
+    presenter = LoggerPresenter(LoggerWindow(), FakeSettings(tmp_path), find_ports=lambda: [])
+    with caplog.at_level("INFO"):
+        presenter.connect("/dev/x")
+    assert "connect failed" in caplog.text
+
+
 def test_bundled_profiles_are_valid(logger: LoggerPresenter) -> None:
     entries = list_profiles([(LOGGER_PROFILES, "extra")])
     assert "Переключения и хлопки" in [e.name for e in entries]

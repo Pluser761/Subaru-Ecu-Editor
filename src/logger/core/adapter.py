@@ -74,8 +74,12 @@ class Adapter:
         return Opened(connect(device), version, voltage)
 
     def reopen(self, reason: str) -> Connection:
-        """После обрыва: сброс адаптера, закрыть порт, подождать, открыть и подключиться заново."""
-        self.note(f"link lost ({reason}): reset adapter and reconnect")
+        """После обрыва: сброс адаптера, закрыть порт, подождать, открыть и подключиться заново.
+
+        Про обрыв пишет LoggerRunner (одна строка на обрыв, а не на попытку), поэтому здесь
+        только отладочная запись причины.
+        """
+        log.debug("adapter: reopen after %s", reason)
         self._release(close_channels=False)
         connection = self.open().connection
         self.note(f"reconnected: SSM over {connection.transport}")

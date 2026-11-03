@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections.abc import Callable
@@ -37,6 +38,8 @@ LOGGER_EXTRA = LOGGER_DEFS.parent / "extra"
 LOGGER_PROFILES = LOGGER_DEFS.parent / "profiles"
 EMULATOR_PORT = "emulator"
 UI_HZ = 10
+
+log = logging.getLogger(__name__)
 
 _KIND_TITLES = {
     "parameter": N_("Стандартные"),
@@ -172,6 +175,7 @@ class LoggerPresenter:
             self.connection = opened.connection
         except Exception as exc:  # noqa: BLE001 — показать в окне; порт закрыть
             self._close_port()
+            log.warning("connect failed: port %s: %s", port, exc)
             self.window.set_connected(False, tr("Не подключено"))
             if isinstance(exc, OpenPortNotFound):
                 self.window.set_error(tr("OpenPort 2.0 не найден — проверьте USB-подключение"))
