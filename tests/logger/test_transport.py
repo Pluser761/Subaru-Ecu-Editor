@@ -6,6 +6,7 @@ import pytest
 
 from src.logger.core.transport import op2
 from src.logger.core.transport.emulator import FakeOpenPort
+from src.logger.core.transport.links import CanLink
 from src.logger.core.transport.op2 import OpenPort2, OpenPortError
 
 
@@ -108,6 +109,24 @@ def test_real_can_rejection() -> None:
         statuses.append((frame.status, frame.data))
     assert statuses[0][0] == op2.RX_TX_ECHO
     assert statuses[1] == (op2.RX_COMPLETE, bytes.fromhex("000007E8") + bytes.fromhex("7FA812"))
+
+
+def test_can_long_response_is_reassembled() -> None:
+    # На машине ответ на запрос DTC (84 адреса = 85 байт) приходит записью 0x00
+    # (69 байт) и остатком 0x40: CanLink должен собрать их в одно сообщение
+    port = FakeOpenPort()
+    link = CanLink(OpenPort2(port))
+    port._out.clear()
+    response_id = (0x7E8).to_bytes(4, "big")
+    first = b"\xe8" + bytes(range(10))
+    rest = bytes(range(10, 16))
+    port._frame(op2.ISO15765, op2.RX_FIRST_FRAME, response_id)  # маркер «будет длинный ответ»
+    port._frame(op2.ISO15765, op2.RX_PARTIAL, response_id + first)
+    port._frame(op2.ISO15765, op2.RX_COMPLETE, response_id + rest)
+    assert link.receive(0.1) == first + rest
+    # Следующее короткое сообщение не должно склеиться с остатком прошлого
+    port._frame(op2.ISO15765, op2.RX_COMPLETE, response_id + b"\xe8\x01")
+    assert link.receive(0.1) == b"\xe8\x01"
 
 
 def test_identify_resyncs_stuck_adapter() -> None:

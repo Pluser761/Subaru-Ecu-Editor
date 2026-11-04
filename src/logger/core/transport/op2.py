@@ -49,6 +49,7 @@ PASS_FILTER = 1
 FLOW_CONTROL_FILTER = 3
 
 # Биты status принятой записи (свои у адаптера, не J2534 RxStatus)
+RX_PARTIAL = 0x00  # CAN: первый/промежуточный кусок длинного ответа, дальше будет 0x40
 RX_TX_ECHO = 0x10  # эхо нашей передачи
 RX_FIRST_FRAME = 0x80  # ISO-TP: пришёл первый кадр, сообщение собирается
 RX_COMPLETE = 0x40  # полное сообщение

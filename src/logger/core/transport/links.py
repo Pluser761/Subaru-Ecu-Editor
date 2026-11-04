@@ -48,6 +48,7 @@ class CanLink:
         self._dev = device
         self._tx_id = request_id.to_bytes(4, "big")
         self._rx_id = response_id.to_bytes(4, "big")
+        self._partial = bytearray()  # куски длинного ответа (status 0x00), ещё не полный
         p = op2.ISO15765
         device.open_channel(p, 0, CAN_BAUD, channel)
         for param, value in (
@@ -67,20 +68,37 @@ class CanLink:
         self._dev.transmit(op2.ISO15765, self._tx_id + payload, op2.ISO15765_FRAME_PAD, wait=wait)
 
     def receive(self, timeout: float) -> bytes | None:
-        """Следующее полное сообщение от ЭБУ (без CAN ID); эхо и «первый кадр» пропускаются."""
+        """Следующее полное сообщение от ЭБУ (без CAN ID).
+
+        Длинный ответ адаптер отдаёт несколькими записями (на машине — status 0x00
+        с первым куском и 0x40 с остатком: запрос DTC на 84 адреса — это 85 байт).
+        Собираем куски до записи «сообщение готово»; эхо своей передачи пропускаем.
+        """
+        deadline = time.monotonic() + timeout
         while True:
-            frame = self._dev.receive(op2.ISO15765, timeout)
+            frame = self._dev.receive(op2.ISO15765, max(deadline - time.monotonic(), 0))
             if frame is None:
+                self._partial.clear()
                 return None
-            if frame.status & (op2.RX_TX_ECHO | op2.RX_FIRST_FRAME):
+            if frame.status & op2.RX_TX_ECHO:
                 continue
-            if frame.data[:4] == self._rx_id:
-                return frame.data[4:]
+            if frame.data[:4] != self._rx_id:
+                continue
+            payload = frame.data[4:]
+            if frame.status & op2.RX_COMPLETE:
+                data = bytes(self._partial) + payload
+                self._partial.clear()
+                return data
+            # Первый/промежуточный кусок длинного ответа: status 0x00 (машина)
+            # или 0x80 (эмулятор), продолжение придёт записью с RX_COMPLETE
+            self._partial += payload
 
     def flush(self) -> None:
         self._dev.drain(op2.ISO15765)
+        self._partial.clear()
 
     def close(self) -> None:
+        self._partial.clear()
         self._dev.close_channel(op2.ISO15765)
 
 

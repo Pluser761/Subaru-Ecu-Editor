@@ -214,9 +214,13 @@ class FakeOpenPort:
             self._reply(f"aro {seq}")
             response = self.ecu.handle_can(message) if self.filters.get(proto) else None
             if response is not None:
-                if len(response) > 7:
-                    self._frame(proto, op2.RX_FIRST_FRAME, (0x7E8).to_bytes(4, "big"))
-                self._frame(proto, op2.RX_COMPLETE, (0x7E8).to_bytes(4, "big") + response)
+                # Как на машине: в одну запись адаптера влезает ~69 байт данных,
+                # длинный ответ приходит куском 0x00 и остатком 0x40
+                response_id = (0x7E8).to_bytes(4, "big")
+                chunks = [response[i : i + 69] for i in range(0, len(response), 69)] or [b""]
+                for chunk in chunks[:-1]:
+                    self._frame(proto, op2.RX_PARTIAL, response_id + chunk)
+                self._frame(proto, op2.RX_COMPLETE, response_id + chunks[-1])
         elif proto == op2.ISO9141:
             # Как у настоящего адаптера (журнал 21.10.2026): служебные записи с меткой времени,
             # эхо и данные — без неё; ответ ЭБУ — кусками до 32 байт
