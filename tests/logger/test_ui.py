@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from src.logger.core.profile import ProfileItem, list_profiles, load_profile, save_profile
-from src.logger.core.session import DtcReading
+from src.logger.core.session import AflTable, DtcReading, FlkcTable
 from src.logger.core.transport.op2 import NO_REPLY, OpenPortError
 from src.logger.presenter import EMULATOR_PORT, LOGGER_PROFILES, LoggerPresenter, RomInfo
 from src.logger.ui.window import DtcRow, LoggerWindow
@@ -269,3 +269,32 @@ def test_dtc_clear_blocked_without_read_and_while_recording(
     runner._log_path = None
     window.set_recording(None)
     assert window._dtc_clear_btn.isEnabled()
+
+
+def test_afl_dump_saves_and_status_restores(
+    logger: LoggerPresenter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """После сохранения строка состояния показывает путь, но не висит — вернётся через таймер."""
+    _connect_without_thread(logger)
+    window, runner = logger.window, logger.runner
+    assert runner is not None
+    afl = AflTable(stored={"A": -13.0, "B": -14.8, "C": -12.1, "D": -8.5}, current=-13.0, range_index=2)
+    flkc = FlkcTable(cells=tuple((0.0,) * 5 for _ in range(7)))
+    monkeypatch.setattr(runner.poller, "read_afl", lambda: afl)
+    monkeypatch.setattr(runner.poller, "read_flkc", lambda: flkc)
+    out = tmp_path / "learning.csv"
+    monkeypatch.setattr(window, "show_afl_dump", lambda _text: True)
+    monkeypatch.setattr(window, "ask_afl_save_path", lambda _suggested: str(out))
+
+    window._afl_btn.click()  # цикл остановлен — команда выполняется сразу
+    assert out.exists() and "A/F Learning #1" in out.read_text()
+    assert "сохранены" in window._status.text()
+    assert logger._status_timer.isActive()  # сообщение временное, а не висит
+
+    logger._restore_status()  # как по таймеру
+    assert window._status.text() == logger._status
+
+    # Отмена сохранения — строку не оставляем на «Чтение…»
+    monkeypatch.setattr(window, "show_afl_dump", lambda _text: False)
+    window._afl_btn.click()
+    assert window._status.text() == logger._status

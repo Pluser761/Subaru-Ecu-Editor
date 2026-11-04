@@ -39,6 +39,9 @@ LOGGER_EXTRA = LOGGER_DEFS.parent / "extra"
 LOGGER_PROFILES = LOGGER_DEFS.parent / "profiles"
 EMULATOR_PORT = "emulator"
 UI_HZ = 10
+# Сколько держать временное сообщение (выгрузка сохранена / ошибка) в строке состояния,
+# прежде чем вернуть строку подключения
+STATUS_TIMEOUT_MS = 5000
 # Неудачных попыток переподключения, после которых подсказываем выдернуть USB
 # (адаптер иногда поднимается сам на 4–8-й попытке — не дёргать USB раньше времени)
 REPLUG_AFTER = 6
@@ -140,6 +143,9 @@ class LoggerPresenter:
         self._timer = QTimer()
         self._timer.setInterval(1000 // UI_HZ)
         self._timer.timeout.connect(self._refresh)
+        self._status_timer = QTimer()
+        self._status_timer.setSingleShot(True)
+        self._status_timer.timeout.connect(self._restore_status)
 
         w = window
         w.connect_requested.connect(self.connect)
@@ -213,6 +219,7 @@ class LoggerPresenter:
 
     def disconnect(self) -> None:
         self._timer.stop()
+        self._status_timer.stop()
         self._dtc_token = None  # ответы на чтение/сброс, пришедшие позже, игнорируются
         self._afl_token = None  # ответ на выгрузку A/F Learning, пришедший позже, игнорируется
         self._dtc_read_done = False
@@ -374,6 +381,22 @@ class LoggerPresenter:
             self._shown_status = text
             self.window.set_connected(True, text)
 
+    def _show_status_temporarily(self, text: str, *, error: bool = False) -> None:
+        """Показать сообщение в строке состояния и через STATUS_TIMEOUT_MS вернуть подключение.
+        Иначе временная строка (например, «Таблицы обучения сохранены…») висела бы до события связи."""
+        if error:
+            self.window.set_afl_error(text)
+        else:
+            self.window.set_afl_status(text)
+        self._status_timer.start(STATUS_TIMEOUT_MS)
+
+    def _restore_status(self) -> None:
+        """Вернуть строку подключения после временного сообщения в статусе."""
+        if self.runner is None:
+            return
+        self._shown_status = self._status
+        self.window.set_connected(True, self._status)
+
     def _reconnect_hint(self, error: Exception | None) -> str:
         """Короткая подсказка о причине неудачного переподключения; иначе пусто."""
         if isinstance(error, OpenPortNotFound):
@@ -477,6 +500,7 @@ class LoggerPresenter:
             return
         token = object()
         self._afl_token = token
+        self._status_timer.stop()  # отменить прежнее временное сообщение
         self.window.set_afl_busy(True, tr("Чтение таблиц обучения…"))
 
         def read() -> tuple[AflTable, FlkcTable]:
@@ -511,9 +535,9 @@ class LoggerPresenter:
         try:
             write_learning_csv(path, ecu, afl, afl_ranges, flkc)
         except OSError as exc:
-            self.window.set_afl_error(tr("Таблица не сохранена: {error}", error=exc))
+            self._show_status_temporarily(tr("Таблица не сохранена: {error}", error=exc), error=True)
             return
-        self.window.set_afl_status(tr("Таблицы обучения сохранены: {path}", path=path))
+        self._show_status_temporarily(tr("Таблицы обучения сохранены: {path}", path=path))
 
     def _on_afl_error(self, payload: tuple[object, Exception]) -> None:
         token, error = payload
@@ -521,7 +545,7 @@ class LoggerPresenter:
             return
         self._afl_token = None
         self.window.set_afl_busy(False)
-        self.window.set_afl_error(tr("Таблицы обучения не прочитаны: {error}", error=error))
+        self._show_status_temporarily(tr("Таблицы обучения не прочитаны: {error}", error=error), error=True)
 
     def _afl_suggested_name(self) -> str:
         return str(self.log_folder() / f"learning_{datetime.now():%Y%m%d_%H%M%S}.csv")
