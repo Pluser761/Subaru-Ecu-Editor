@@ -63,10 +63,10 @@ def test_read_afl_table(defs: LoggerDefs, can: bool) -> None:
 
 
 def test_read_afl_rejected_address_reads_via_kline(defs: LoggerDefs) -> None:
+    # Один адрес RAM отклонён по CAN — выгрузка всё равно читает значение (уходит на K-line)
     dev, _ecu = _device(can_rejected={0xFF2C90})
     poller = Poller(connect(dev), defs)
     assert poller.read_afl().stored["A"] == pytest.approx(-13.0)
-    assert 0xFF2C90 in poller._bad_addresses
 
 
 def test_read_flkc_table(defs: LoggerDefs) -> None:
@@ -76,6 +76,19 @@ def test_read_flkc_table(defs: LoggerDefs) -> None:
     assert flkc.cells[0][0] == pytest.approx(0.0)
     assert flkc.cells[1][0] == pytest.approx(5.0)  # индекс 5 — строка 1, колонка 0
     assert flkc.cells[6][4] == pytest.approx(34.0)
+
+
+def test_read_learning_uses_kline_for_ram_when_can_rejects(defs: LoggerDefs) -> None:
+    """RAM по CAN у AZ1G101M отклоняется (7F A8 12). Выгрузка читает её по K-line целиком,
+    а не перебором по одному адресу (иначе на 140 адресах FLKC это ~300 запросов)."""
+    dev, ecu = _device(can_rejects_ram=True)
+    poller = Poller(connect(dev), defs)
+    before = len(ecu.requests)
+    afl = poller.read_afl()
+    flkc = poller.read_flkc()
+    assert afl.stored["A"] == pytest.approx(-13.0)
+    assert flkc.cells[6][4] == pytest.approx(34.0)
+    assert len(ecu.requests) - before <= 8  # AFL и FLKC по K-line, без CAN-перебора (~300 запросов)
 
 
 def test_write_learning_csv(tmp_path: Path) -> None:

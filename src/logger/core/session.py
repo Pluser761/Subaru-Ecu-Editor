@@ -353,10 +353,27 @@ class Poller:
     def _read_blocking(self, addresses: list[int]) -> dict[int, int]:
         """Прочитать адреса одним разом и дождаться ответа: основной канал, отказавшие на нём —
         сразу по K-line. В отличие от обычного опроса нельзя показывать последнее значение
-        K-line — разовое чтение (DTC, таблица A/F Learning) требует свежих байт, поэтому без
-        ответа сообщаем об ошибке.
+        K-line — разовое чтение (DTC, таблицы A/F Learning и FLKC) требует свежих байт, поэтому
+        без ответа сообщаем об ошибке.
         """
-        out = self._read_isolating(self.connection.client, addresses)
+        out: dict[int, int | None] = {}
+        try:
+            data = self.connection.client.read_addresses(addresses)
+            self._bad_addresses.difference_update(addresses)
+            out.update(zip(addresses, data))
+        except SsmError as exc:
+            if exc.code is None:
+                raise
+            # Адреса RAM (0xFF0000+) у части ЭБУ по CAN отклоняются (7F A8 12). Читаем их
+            # сразу по K-line, а не перебором по одному адресу: на 140 адресах FLKC это
+            # ~300 запросов и опрос встаёт на секунды.
+            fallback = self._open_fallback() if self.connection.transport == "can" else None
+            if fallback is not None and addresses and all(a >= 0xFF0000 for a in addresses):
+                data = fallback.read_addresses(addresses)
+                self._fallback_values.update(zip(addresses, data))
+                out.update(zip(addresses, data))
+            else:
+                out.update(self._read_isolating(self.connection.client, addresses))
         # По K-line читаем все отказавшие адреса заново: последнее значение опроса могло
         # быть получено раньше, чем нужно
         bad = [a for a in addresses if a in self._bad_addresses]
