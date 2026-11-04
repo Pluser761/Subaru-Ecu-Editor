@@ -255,7 +255,7 @@ class LoggerRunner:
         link.lost_since = since
         link.attempts = 0
         link.last_error = error
-        self._note(f"link lost: {error}")
+        self._note(f"link lost at {self.rate:.0f} Hz: {error}")  # частота — для диагностики обрывов
         reason = str(error)
         while self._running.is_set():
             link.attempts += 1
