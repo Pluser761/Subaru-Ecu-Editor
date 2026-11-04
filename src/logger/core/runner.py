@@ -45,6 +45,8 @@ MAX_MISSES = 3
 RETRY_PAUSE = 0.5
 # Как часто сбрасывать CSV на диск, с: при вылете теряется не больше этого
 FLUSH_PERIOD = 1.0
+# Как часто читать напряжение на OBD, с: для диагностики обрывов (провал/всплеск питания)
+VOLTAGE_PERIOD = 1.0
 
 
 @dataclass
@@ -56,6 +58,7 @@ class LinkStats:
     lost_since: float | None = None  # time.monotonic() начала текущего обрыва
     attempts: int = 0  # попыток переподключения в текущем обрыве
     last_error: Exception | None = None  # причина обрыва или последней неудачной попытки
+    voltage: float | None = None  # последнее прочитанное напряжение на OBD, В (диагностика)
 
 
 @dataclass
@@ -215,6 +218,7 @@ class LoggerRunner:
 
     def _loop(self) -> None:
         last: float | None = None
+        last_voltage: float | None = None
         misses = 0
         first_miss = 0.0
         while self._running.is_set():
@@ -227,6 +231,9 @@ class LoggerRunner:
                 self.step()
                 misses = 0
                 self._run_calls()
+                if last_voltage is None or started - last_voltage >= VOLTAGE_PERIOD:
+                    last_voltage = started
+                    self._read_voltage()
             except Exception as exc:  # noqa: BLE001 — нет ответа, адаптер молчит, порт пропал
                 if not self._running.is_set():
                     return  # остановили посреди опроса (закрыли порт) — это не обрыв
@@ -248,6 +255,14 @@ class LoggerRunner:
             if spent < self._min_period:
                 time.sleep(self._min_period - spent)
 
+    def _read_voltage(self) -> None:
+        """Прочитать напряжение на OBD (диагностика обрывов); ошибка не рвёт опрос."""
+        try:
+            with self._lock:
+                self.link.voltage = self.poller.connection.device.read_voltage()
+        except Exception:  # noqa: BLE001 — адаптер молчит или не отдаёт напряжение
+            pass
+
     def _restore(self, error: Exception, since: float) -> bool:
         """Переподключаться, пока не выйдет или не остановят. False — остановили."""
         assert self._reconnect is not None
@@ -256,7 +271,8 @@ class LoggerRunner:
         link.lost_since = since
         link.attempts = 0
         link.last_error = error
-        self._note(f"link lost at {self.rate:.0f} Hz: {error}")  # частота — для диагностики обрывов
+        voltage = f", {link.voltage:.2f} V" if link.voltage is not None else ""
+        self._note(f"link lost at {self.rate:.0f} Hz{voltage}: {error}")  # частота/напряжение — диагностика
         reason = str(error)
         while self._running.is_set():
             link.attempts += 1
