@@ -473,9 +473,13 @@ class LoggerPresenter:
         self._dtc_read_done = True  # после сброса коды прочитаны заново
         self.window.set_dtc_busy(False)
         self.window.set_dtc_rows(_dtc_rows(readings))
-        self.window.set_dtc_status(
-            tr("Ошибки сброшены (reset ЭБУ). Кодов после сброса: {n}", n=len(readings))
-        )
+        if readings:
+            self.window.set_dtc_status(
+                tr("Коды не стёрты: {n}. Неисправность активна или ЭБУ не очистил память.",
+                   n=len(readings))
+            )
+        else:
+            self.window.set_dtc_status(tr("Ошибки сброшены. Кодов нет."))
 
     def _on_dtc_error(self, payload: tuple[object, str, Exception]) -> None:
         token, action, error = payload

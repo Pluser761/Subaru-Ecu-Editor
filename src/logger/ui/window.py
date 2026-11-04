@@ -243,8 +243,9 @@ class LoggerWindow(QWidget):
         self._dtc_clear_btn.clicked.connect(self.dtc_clear_requested)
         self._dtc_status = QLabel("")
         self._dtc_status.setWordWrap(True)
-        dtc_hint = QLabel(tr("Сброс стирает и обученные значения (топливные коррекции, ХХ), "
-                              "и мониторы готовности."))
+        dtc_hint = QLabel(tr("Сначала OBD-II mode 04 (стирает коды и мониторы готовности); "
+                              "если ЭБУ его не поддержит — reset ЭБУ, который стирает и обученные "
+                              "значения (топливные коррекции, ХХ)."))
         dtc_hint.setStyleSheet("color: #777;")
         dtc_hint.setWordWrap(True)
         dtc_buttons = QHBoxLayout()
@@ -507,17 +508,19 @@ class LoggerWindow(QWidget):
         elif not self._dtc_read:
             tip = tr("Сначала прочитайте коды")
         else:
-            tip = tr("Сброс стирает и обученные значения (топливные коррекции, ХХ), "
-                     "и мониторы готовности.")
+            tip = tr("Сначала OBD-II mode 04 (стирает коды и мониторы готовности); "
+                     "если ЭБУ его не поддержит — reset ЭБУ, который стирает и обученные "
+                     "значения (топливные коррекции, ХХ).")
         self._dtc_clear_btn.setToolTip(tip)
 
     def ask_clear_dtc(self) -> bool:
-        """Подтверждение сброса: он стирает и обученные значения, и мониторы готовности."""
+        """Подтверждение сброса: OBD-II mode 04, иначе reset ЭБУ."""
         answer = QMessageBox.question(
             self,
             tr("Сброс ошибок"),
-            tr("Сбросить память ошибок (reset ЭБУ)?\n\nВместе с кодами сбросятся обученные значения "
-               "(топливные коррекции, ХХ) и мониторы готовности. После сброса коды будут прочитаны заново."),
+            tr("Сбросить память ошибок?\n\nСначала пробуем OBD-II mode 04; если ЭБУ его не "
+               "поддерживает — reset ЭБУ со стиранием обученных значений (топливные коррекции, ХХ) "
+               "и мониторов готовности. После сброса коды будут прочитаны заново."),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

@@ -87,9 +87,28 @@ def test_clear_dtc_erases_codes_and_rereads(defs: LoggerDefs) -> None:
     poller = Poller(connect(dev), defs)
     assert poller.read_dtc()
     assert poller.clear_dtc(pause=0) == []
-    assert ecu.resets == 1  # B8 000060 40 дошёл до ЭБУ
+    assert ecu.obd_clears == 1 and ecu.resets == 0  # штатный OBD-II mode 04
     assert ecu.writes[0x8E] == 0 and ecu.writes[0xAE] == 0  # память ошибок стёрта
     assert poller.read_dtc() == []
+
+
+def test_clear_dtc_falls_back_to_reset(defs: LoggerDefs) -> None:
+    # ЭБУ не поддержал OBD-II mode 04 — остаётся RomRaider «Reset ECU»
+    dev, ecu = _device(defs, obd_clear_supported=False)
+    poller = Poller(connect(dev), defs)
+    assert poller.read_dtc()
+    assert poller.clear_dtc(pause=0) == []
+    assert ecu.obd_clears == 0 and ecu.resets == 1
+    assert ecu.writes[0x8E] == 0 and ecu.writes[0xAE] == 0
+
+
+def test_clear_dtc_on_kline_uses_reset(defs: LoggerDefs) -> None:
+    # OBD-II mode 04 отправляем только по CAN; на K-line — reset ЭБУ
+    dev, ecu = _device(defs, can_enabled=False)
+    poller = Poller(connect(dev), defs)
+    assert poller.read_dtc()
+    assert poller.clear_dtc(pause=0) == []
+    assert ecu.obd_clears == 0 and ecu.resets == 1
 
 
 def test_clear_dtc_forgets_rejected_addresses(defs: LoggerDefs) -> None:
@@ -113,11 +132,21 @@ def test_dtc_read_retries_rejected_address_on_main_channel(defs: LoggerDefs) -> 
     assert 0x8E not in poller._bad_addresses
 
 
-def test_clear_dtc_notes_reset_in_trace(defs: LoggerDefs) -> None:
+def test_clear_dtc_notes_obd_in_trace(defs: LoggerDefs) -> None:
     fake = FakeEcu(memory=lambda a: DTC_MEMORY.get(a, 0), dtc_addresses=_addresses(defs))
     trace = io.StringIO()
     dev = OpenPort2(FakeOpenPort(fake), Trace(trace))
     Poller(connect(dev), defs).clear_dtc(pause=0)
+    assert "DTC cleared (OBD-II mode 04)" in trace.getvalue()
+
+
+def test_clear_dtc_notes_reset_in_trace_when_obd_unsupported(defs: LoggerDefs) -> None:
+    fake = FakeEcu(memory=lambda a: DTC_MEMORY.get(a, 0), dtc_addresses=_addresses(defs),
+                   obd_clear_supported=False)
+    trace = io.StringIO()
+    dev = OpenPort2(FakeOpenPort(fake), Trace(trace))
+    Poller(connect(dev), defs).clear_dtc(pause=0)
+    assert "OBD-II mode 04 failed" in trace.getvalue()
     assert "DTC cleared (ECU reset 0x40)" in trace.getvalue()
 
 

@@ -73,6 +73,8 @@ MARK_USER = 1
 MARK_RESTORED = 2
 # Пауза после reset ЭБУ, с: он перезагружается, init может ответить не сразу
 DTC_RESET_PAUSE = 1.5
+# Пауза после OBD-II mode 04: ЭБУ обновляет память кодов, читаем чуть позже
+OBD_CLEAR_PAUSE = 0.2
 
 # Таблица A/F Learning #1 (долговременная коррекция топлива по зонам расхода воздуха):
 # stored A/B/C/D — E44–E47 (4-байтовый float), текущее — E48, текущая зона — E61 (1…4).
@@ -203,19 +205,36 @@ class Poller:
         return readings
 
     def clear_dtc(self, pause: float = DTC_RESET_PAUSE) -> list[DtcReading]:
-        """Сбросить память ошибок: RomRaider «Reset ECU» (0x40 по 0x000060), затем init
-        заново и повторное чтение. Забывает отказы по адресам: после перезапуска ЭБУ они
-        могут читаться снова."""
+        """Стереть память ошибок и прочитать коды заново.
+
+        Сначала OBD-II mode 04 — штатная очистка кодов (SSM reset 0x40 на AZ1G101M коды
+        не стирает). Если сервис 04 не поддержан или не ответил — RomRaider «Reset ECU»
+        (0x40 по 0x000060) и init заново. После любой команды кэши отказов по адресам
+        сбрасываются: после перезапуска ЭБУ они могут читаться снова.
+        """
         client = self.connection.client
-        client.reset_ecu()
-        self.connection.device.note("DTC cleared (ECU reset 0x40)")
-        if pause > 0:
-            time.sleep(pause)
+        reset = False
+        if client.transport == "can":
+            try:
+                client.clear_obd_dtc()
+                self.connection.device.note("DTC cleared (OBD-II mode 04)")
+            except SsmError as exc:
+                self.connection.device.note(f"OBD-II mode 04 failed ({exc}); trying ECU reset")
+                reset = True
+        else:
+            reset = True
+        if reset:
+            client.reset_ecu()
+            self.connection.device.note("DTC cleared (ECU reset 0x40)")
+            if pause > 0:
+                time.sleep(pause)
+            self.connection.init = client.init()
+        elif pause > 0:
+            time.sleep(min(pause, OBD_CLEAR_PAUSE))
         self._forget_fallback()
         self._bad_addresses.clear()
         self.unsupported.clear()
         self.slow.clear()
-        self.connection.init = client.init()
         self._plan = self._build_plan()
         return self.read_dtc()
 

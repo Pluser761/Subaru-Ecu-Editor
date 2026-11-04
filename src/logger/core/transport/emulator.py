@@ -1,9 +1,9 @@
 """Эмулятор OpenPort 2.0 и ЭБУ Subaru за ним — чтобы проверять логгер без машины.
 
 FakeEcu отвечает на init, читает адреса (`A8`), пишет байт (`B8`) и хранит память ошибок:
-reset ЭБУ (0x40 по 0x000060) обнуляет адреса DTC. FakeOpenPort ведёт себя как порт адаптера
-(write/read): разбирает команды `at*`, отвечает `aro`/`are`, а передачу на CAN или K-line
-отдаёт FakeEcu и возвращает его ответ двоичной записью в том же формате, что и адаптер.
+её стирают reset ЭБУ (0x40 по 0x000060) и OBD-II mode 04. FakeOpenPort ведёт себя как порт
+адаптера (write/read): разбирает команды `at*`, отвечает `aro`/`are`, а передачу на CAN или
+K-line отдаёт FakeEcu и возвращает его ответ двоичной записью в том же формате, что и адаптер.
 Формат записей K-line взят по аналогии с CAN (на железе не проверен) — эмулятор и op2.py
 согласованы между собой.
 """
@@ -38,11 +38,13 @@ class FakeEcu:
     can_rejected: set[int] = field(default_factory=set)  # адреса, на которые по CAN отказ
     # Как ЭБУ 5C42584007 на машине (21.10.2026): адреса RAM (0xFF0000+) по CAN — отказ 7F A8 12
     can_rejects_ram: bool = False
-    # Память ошибок: адреса байт DTC, которые обнуляются reset ЭБУ (0x40 по 0x000060)
+    # Память ошибок: адреса байт DTC, которые стирают reset ЭБУ и OBD-II mode 04
     dtc_addresses: set[int] = field(default_factory=set)
     # Записи B8 поверх memory: адрес → байт
     writes: dict[int, int] = field(default_factory=dict)
     resets: int = 0  # сколько раз принят «Reset ECU»
+    obd_clear_supported: bool = True  # ЭБУ отвечает на OBD-II mode 04 (очистка DTC)
+    obd_clears: int = 0  # сколько раз принят OBD-II mode 04
     requests: list[tuple[str, bytes]] = field(default_factory=list)
 
     @property
@@ -53,6 +55,10 @@ class FakeEcu:
         """Байт памяти: сначала записи B8, потом memory (функция может меняться во времени)."""
         return self.writes.get(address, self.memory(address)) & 0xFF
 
+    def clear_dtc_memory(self) -> None:
+        for dtc in self.dtc_addresses:
+            self.writes[dtc] = 0
+
     def write(self, address: int, value: int) -> None:
         """Запись байта по адресу (B8); 0x40 по 0x000060 — RomRaider «Reset ECU»:
         стирает коды неисправностей (как и на машине, проверяется тестами)."""
@@ -60,8 +66,7 @@ class FakeEcu:
         self.writes[address] = value
         if address == ssm.ECU_RESET_ADDRESS and value == ssm.ECU_RESET_CODE:
             self.resets += 1
-            for dtc in self.dtc_addresses:
-                self.writes[dtc] = 0
+            self.clear_dtc_memory()
 
     def handle_can(self, message: bytes) -> bytes | None:
         self.requests.append(("can", message))
@@ -70,6 +75,12 @@ class FakeEcu:
         command = message[0]
         if command == ssm.CAN_INIT:
             return bytes([ssm.CAN_INIT_RESPONSE]) + self.init_data
+        if command == ssm.OBD_CLEAR_DTC:
+            if not self.obd_clear_supported:
+                return bytes([ssm.NEGATIVE_RESPONSE, command, 0x11])
+            self.obd_clears += 1
+            self.clear_dtc_memory()
+            return bytes([ssm.OBD_CLEAR_DTC_RESPONSE])
         if command == ssm.READ_ADDRESS:
             addresses = _addresses(message[2:])
             if any(a in self.can_rejected for a in addresses):

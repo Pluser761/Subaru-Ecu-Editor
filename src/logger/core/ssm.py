@@ -169,6 +169,16 @@ class SsmClient:
         и мониторы готовности; после него ЭБУ инициализируют заново (`init`)."""
         self.write_address(ECU_RESET_ADDRESS, ECU_RESET_CODE)
 
+    def clear_obd_dtc(self) -> None:
+        """OBD-II mode 04 — стереть коды и сохранённые значения (только CAN).
+
+        На AZ1G101M SSM reset 0x40 коды не стирает, а сервис 04 OBD-II — штатная
+        команда очистки. Отказ ЭБУ (`7F 04 xx`) поднимается как SsmError с кодом.
+        """
+        if self.link.name != "can":
+            raise SsmError("SSM: OBD-II mode 04 is supported over CAN only")
+        self._request_can(bytes([OBD_CLEAR_DTC]), OBD_CLEAR_DTC_RESPONSE)
+
     # --- Чтение без ожидания (K-line рядом с быстрым CAN) ---
 
     @property
