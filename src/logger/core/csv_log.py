@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TextIO
 
-from src.logger.core.session import Sample
+from src.logger.core.session import AflTable, FlkcTable, Sample
 
 MARK_COLUMN = "Mark"
 
@@ -54,3 +54,68 @@ class CsvLogWriter:
         if math.isnan(value) or math.isinf(value):
             return ""
         return f"{value:.{digits}f}".replace(".", self._decimal)
+
+
+_AFL_ZONES = ("A", "B", "C", "D")
+
+
+def _learning_number(value: float, digits: int = 2) -> str:
+    if math.isnan(value) or math.isinf(value):
+        return ""
+    return f"{value:.{digits}f}".replace(".", ",")
+
+
+def _axis_number(value: float) -> str:
+    """Значение оси без лишних нулей: 3200, 5.6, 1.64 (десятичный знак «,»)."""
+    if math.isnan(value) or math.isinf(value):
+        return ""
+    return f"{value:g}".replace(".", ",")
+
+
+def _axis_labels(axis: Sequence[float]) -> list[str]:
+    """Подписи диапазонов по границам: «0 - a», «a - b», …, «z - ». Пустая ось — пустой список."""
+    if not axis:
+        return []
+    labels = [f"0 - {_axis_number(axis[0])}"]
+    for i in range(1, len(axis)):
+        labels.append(f"{_axis_number(axis[i - 1])} - {_axis_number(axis[i])}")
+    labels.append(f"{_axis_number(axis[-1])} - ")
+    return labels
+
+
+def write_learning_csv(
+    path: str | Path,
+    ecu_id: str,
+    afl: AflTable,
+    afl_ranges: Sequence[float],
+    flkc: FlkcTable,
+) -> None:
+    """Одноразовая выгрузка таблиц обучения (A/F Learning #1 + FLKC) в CSV («;» и «,»)."""
+    num = _learning_number
+    lines: list[str] = [f"ECU;{ecu_id}", ""]
+
+    # --- A/F Learning #1 ---
+    lines.append("A/F Learning #1")
+    lines.append("Zone;Airflow (g/s);Value (%)")
+    zone_labels = _axis_labels(afl_ranges) or [""] * len(_AFL_ZONES)
+    for i, zone in enumerate(_AFL_ZONES):
+        air = zone_labels[i] if i < len(zone_labels) else ""
+        lines.append(f"{zone};{air};{num(afl.stored.get(zone, math.nan))}")
+    lines.append(f"Current;;{num(afl.current)}")
+    lines.append(f"Range;;{afl.range_index or ''}")
+    lines.append("")
+
+    # --- FLKC ---
+    rows = len(flkc.cells)
+    cols = len(flkc.cells[0]) if rows else 0
+    rpm_labels = _axis_labels(flkc.rpm_axis) or [""] * rows
+    load_labels = _axis_labels(flkc.load_axis) or [""] * cols
+    lines.append("Fine Learning Knock Correction (deg)")
+    lines.append("Load \\ RPM;" + ";".join(rpm_labels[:rows]))
+    for row in range(rows):
+        label = load_labels[row] if row < len(load_labels) else ""
+        cells = ";".join(num(flkc.cells[row][column]) for column in range(cols))
+        lines.append(f"{label};{cells}")
+    lines.append("")
+
+    Path(path).write_text("\n".join(lines), encoding="utf-8", newline="")

@@ -411,7 +411,10 @@ class MainPresenter:
     def open_logger(self) -> None:
         """Логгер → Открыть логгер: отдельное окно; прошивка редактора — для сверки ЭБУ и имени лога."""
         if self._logger is None:
-            self._logger = LoggerPresenter(LoggerWindow(), self._settings, self._logger_rom_info)
+            self._logger = LoggerPresenter(
+                LoggerWindow(), self._settings, self._logger_rom_info,
+                rom_table_reader=self._logger_read_table,
+            )
         window = self._logger.window
         window.show()
         window.raise_()
@@ -420,6 +423,17 @@ class MainPresenter:
     def _logger_rom_info(self) -> RomInfo:
         definition = self._parser.definition
         return RomInfo(self._parser.file_path, definition.romid.ecuid if definition else None)
+
+    def _logger_read_table(self, name: str) -> list[float]:
+        """Значения 2D-таблицы ROM (столбец) для логгера — границы зон AFL и оси FLKC."""
+        parser = self._parser
+        if parser.file_path is None:
+            return []
+        try:
+            table = parser.load_table(name)
+        except (KeyError, AttributeError):
+            return []
+        return [row[0] for row in table.values]
 
     def stop_logger(self) -> None:
         if self._logger is not None:

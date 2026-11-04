@@ -14,6 +14,7 @@ Poller делает init заново и читает коды повторно;
 from __future__ import annotations
 
 import math
+import struct
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -73,6 +74,22 @@ MARK_RESTORED = 2
 # Пауза после reset ЭБУ, с: он перезагружается, init может ответить не сразу
 DTC_RESET_PAUSE = 1.5
 
+# Таблица A/F Learning #1 (долговременная коррекция топлива по зонам расхода воздуха):
+# stored A/B/C/D — E44–E47 (4-байтовый float), текущее — E48, текущая зона — E61 (1…4).
+_AFL_ZONES = ("A", "B", "C", "D")
+_AFL_PARAM = dict(zip(_AFL_ZONES, ("E44", "E45", "E46", "E47")))
+_AFL_CURRENT = "E48"
+_AFL_RANGE = "E61"
+
+# FLKC (Fine Learning Knock Correction) — карта обучения по детонации RPM × Load в RAM.
+# AZ1G101M: база 0xFFFF2D30, ячейки float (4 байта) с шагом 8 байт, 7 строк (RPM) × 5 колонок
+# (Load), row-major (индекс = строка*5 + колонка). Найдено дизассемблером: функция 0x3ED16
+# читает ячейку по offset 0xFFFF7D08, а выбор ячейки в 0x3EC52 даёт строку*5 + колонку (max 35).
+_FLKC_RAM_BASE = 0xFF2D30
+_FLKC_ROWS = 7
+_FLKC_COLS = 5
+_FLKC_STRIDE = 8
+
 
 @dataclass(frozen=True)
 class Sample:
@@ -88,6 +105,28 @@ class DtcReading:
     code: DtcCode
     current: bool
     stored: bool
+
+
+@dataclass(frozen=True)
+class AflTable:
+    """Таблица A/F Learning #1, прочитанная из RAM: stored A/B/C/D и текущее — в %, зона — 1…4."""
+
+    stored: dict[str, float]  # «A»…«D» → % (nan — не прочитано)
+    current: float  # % (nan — не прочитано)
+    range_index: int  # 1…4 (0 — не прочитано)
+
+
+@dataclass(frozen=True)
+class FlkcTable:
+    """Fine Learning Knock Correction: 2D-карта RPM × Load, ячейки — коррекция УОЗ в градусах.
+
+    cells — row-major (_FLKC_ROWS строк × _FLKC_COLS колонок); rpm_axis / load_axis — границы
+    диапазонов (по одной меньше числа строк/колонок), заполняются из ROM.
+    """
+
+    cells: tuple[tuple[float, ...], ...]
+    rpm_axis: tuple[float, ...] = ()
+    load_axis: tuple[float, ...] = ()
 
 
 @dataclass
@@ -149,7 +188,7 @@ class Poller:
         codes = list(self.defs.dtcodes.values())
         if not codes:
             return []
-        raw = self._read_dtc(self._dtc_addresses())
+        raw = self._read_blocking(self._dtc_addresses())
         readings: list[DtcReading] = []
         for code in codes:
             tmp, mem = raw.get(code.tmp_address), raw.get(code.mem_address)
@@ -179,6 +218,55 @@ class Poller:
         self.connection.init = client.init()
         self._plan = self._build_plan()
         return self.read_dtc()
+
+    def read_afl(self) -> AflTable:
+        """Прочитать таблицу A/F Learning #1 одним разом: stored A/B/C/D, текущее значение и
+        зону. Читаются extended-параметры E44–E47, E48, E61 по адресам этого ЭБУ."""
+        param_ids = [*_AFL_PARAM.values(), _AFL_CURRENT, _AFL_RANGE]
+        addresses: list[int] = []
+        index: dict[str, list[int]] = {}
+        for pid in param_ids:
+            param = self.defs.get(pid)
+            own = byte_addresses(param.addresses_for(self.ecu_id))
+            if not own:
+                self.unsupported.add(pid)
+                continue
+            index[pid] = own
+            for address in own:
+                if address not in addresses:
+                    addresses.append(address)
+        raw = self._read_blocking(addresses)
+        values: dict[str, dict[str, float]] = {}
+        for pid, own in index.items():
+            param = self.defs.get(pid)
+            data = bytes(raw[address] for address in own)
+            bit = param.addresses_for(self.ecu_id)[0].bit
+            values[pid] = convert_all(param, data, bit)
+
+        def pct(pid: str) -> float:
+            return values.get(pid, {}).get("%", math.nan)
+
+        stored = {zone: pct(pid) for zone, pid in _AFL_PARAM.items()}
+        current = pct(_AFL_CURRENT)
+        range_index = int(values.get(_AFL_RANGE, {}).get("offset", 0))
+        return AflTable(stored=stored, current=current, range_index=range_index)
+
+    def read_flkc(self) -> FlkcTable:
+        """Прочитать таблицу FLKC (7×5 float, градусы) из RAM по базе _FLKC_RAM_BASE."""
+        addresses: list[int] = []
+        for index in range(_FLKC_ROWS * _FLKC_COLS):
+            base = _FLKC_RAM_BASE + index * _FLKC_STRIDE
+            addresses += [base + offset for offset in range(4)]  # 4 байта float
+        raw = self._read_blocking(addresses)
+        cells: list[tuple[float, ...]] = []
+        for row in range(_FLKC_ROWS):
+            row_values: list[float] = []
+            for column in range(_FLKC_COLS):
+                base = _FLKC_RAM_BASE + (row * _FLKC_COLS + column) * _FLKC_STRIDE
+                data = bytes(raw[base + offset] for offset in range(4))
+                row_values.append(struct.unpack(">f", data)[0])
+            cells.append(tuple(row_values))
+        return FlkcTable(cells=tuple(cells))
 
     def poll(self) -> Sample:
         plan = self._plan
@@ -262,19 +350,19 @@ class Poller:
                     addresses.append(address)
         return addresses
 
-    def _read_dtc(self, addresses: list[int]) -> dict[int, int]:
-        """Прочитать адреса DTC основным каналом; отказавшие — сразу по K-line.
-
-        В отличие от обычного опроса здесь нельзя показывать последнее значение K-line:
-        коды читаются по требованию, поэтому ждём ответ и без него сообщаем об ошибке.
+    def _read_blocking(self, addresses: list[int]) -> dict[int, int]:
+        """Прочитать адреса одним разом и дождаться ответа: основной канал, отказавшие на нём —
+        сразу по K-line. В отличие от обычного опроса нельзя показывать последнее значение
+        K-line — разовое чтение (DTC, таблица A/F Learning) требует свежих байт, поэтому без
+        ответа сообщаем об ошибке.
         """
         out = self._read_isolating(self.connection.client, addresses)
         # По K-line читаем все отказавшие адреса заново: последнее значение опроса могло
-        # быть получено до того, как код появился в памяти ЭБУ
+        # быть получено раньше, чем нужно
         bad = [a for a in addresses if a in self._bad_addresses]
         if bad:
             # Пересоздать K-line: у него мог висеть фоновый запрос опроса, ответ на
-            # который уже не отличить от ответа на чтение DTC
+            # который уже не отличить от ответа на разовое чтение
             self._forget_fallback()
             fallback = self._open_fallback()
             if fallback is not None:
@@ -286,7 +374,7 @@ class Poller:
                     out.pop(address, None)  # без K-line эти байты не прочитать
         missing = [a for a in addresses if out.get(a) is None]
         if missing:
-            raise SsmError("SSM: DTC addresses not read: " + ", ".join(f"{a:06x}" for a in missing))
+            raise SsmError("SSM: addresses not read: " + ", ".join(f"{a:06x}" for a in missing))
         return {a: value for a, value in out.items() if value is not None}
 
     def _read(self, addresses: list[int]) -> dict[int, int | None]:

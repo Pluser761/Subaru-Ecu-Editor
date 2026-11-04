@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -20,12 +20,13 @@ from PyQt6.QtGui import QDesktopServices
 
 from src.i18n import N_, tr
 from src.logger.core.adapter import Adapter
+from src.logger.core.csv_log import write_learning_csv
 from src.logger.core.defs import LoggerDefs, LoggerParam
 from src.logger.core.params import decimals
 from src.logger.core.paths import default_logs_root, rom_log_dir
 from src.logger.core.profile import ProfileItem, list_profiles, load_profile, save_profile
 from src.logger.core.runner import LinkStats, LoggerRunner
-from src.logger.core.session import Connection, DtcReading, Poller, Sample, connect
+from src.logger.core.session import AflTable, Connection, DtcReading, FlkcTable, Poller, Sample, connect
 from src.logger.core.trace import Trace
 from src.logger.core.transport.emulator import FakeEcu, FakeOpenPort, demo_memory
 from src.logger.core.transport.op2 import NO_REPLY, ByteStream, OpenPortError
@@ -89,6 +90,8 @@ class _Bridge(QObject):
     dtc_read = pyqtSignal(object)
     dtc_cleared = pyqtSignal(object)
     dtc_error = pyqtSignal(object)
+    afl_dump = pyqtSignal(object)
+    afl_error = pyqtSignal(object)
 
 
 class LoggerPresenter:
@@ -100,12 +103,14 @@ class LoggerPresenter:
         *,
         find_ports: Callable[[], list[str]] | None = None,
         open_port: Callable[[str], ByteStream] | None = None,
+        rom_table_reader: Callable[[str], list[float]] | None = None,
     ) -> None:
         self.window = window
         self._settings = settings
         self._rom_info = rom_info or RomInfo
         self._find_ports = find_ports or _find_openport
         self._open_port = open_port or _open_serial
+        self._rom_table_reader = rom_table_reader
         extra: list[tuple[str | Path, str]] = [(LOGGER_EXTRA, "extra")]
         if settings is not None:
             extra.append((settings.logger_extra_dir, "user"))
@@ -123,12 +128,15 @@ class LoggerPresenter:
         self._max: dict[str, float] = {}
         self._dtc_token: object | None = None  # текущее чтение/сброс кодов
         self._dtc_read_done = False  # коды прочитаны — сброс разрешён
+        self._afl_token: object | None = None  # текущая выгрузка таблицы A/F Learning
         self._bridge = _Bridge()
         self._bridge.sample.connect(self._on_sample)
         self._bridge.error.connect(self._on_error)
         self._bridge.dtc_read.connect(self._on_dtc_read)
         self._bridge.dtc_cleared.connect(self._on_dtc_cleared)
         self._bridge.dtc_error.connect(self._on_dtc_error)
+        self._bridge.afl_dump.connect(self._on_afl_dump)
+        self._bridge.afl_error.connect(self._on_afl_error)
         self._timer = QTimer()
         self._timer.setInterval(1000 // UI_HZ)
         self._timer.timeout.connect(self._refresh)
@@ -148,6 +156,7 @@ class LoggerPresenter:
         w.open_logs_requested.connect(self._open_logs)
         w.dtc_read_requested.connect(self.read_dtc)
         w.dtc_clear_requested.connect(self.clear_dtc)
+        w.afl_dump_requested.connect(self.dump_afl)
         w.closed.connect(self.disconnect)
         self.refresh_ports()
         self._fill_tree(set())
@@ -205,6 +214,7 @@ class LoggerPresenter:
     def disconnect(self) -> None:
         self._timer.stop()
         self._dtc_token = None  # ответы на чтение/сброс, пришедшие позже, игнорируются
+        self._afl_token = None  # ответ на выгрузку A/F Learning, пришедший позже, игнорируется
         self._dtc_read_done = False
         if self._adapter is not None:
             self._adapter.interrupt()  # не ждать переподключения, если оно идёт
@@ -458,6 +468,70 @@ class LoggerPresenter:
         else:
             self.window.set_dtc_error(tr("Ошибки не прочитаны: {error}", error=error))
 
+    # --- Таблица A/F Learning ---
+
+    def dump_afl(self) -> None:
+        """Выгрузить таблицы обучения (A/F Learning #1 + FLKC): разовое чтение из RAM."""
+        runner = self.runner
+        if runner is None or self._afl_token is not None:
+            return
+        token = object()
+        self._afl_token = token
+        self.window.set_afl_busy(True, tr("Чтение таблиц обучения…"))
+
+        def read() -> tuple[AflTable, FlkcTable]:
+            return runner.poller.read_afl(), runner.poller.read_flkc()
+
+        runner.call(
+            read,
+            lambda result: self._bridge.afl_dump.emit((token, result)),
+            lambda exc: self._bridge.afl_error.emit((token, exc)),
+        )
+
+    def _on_afl_dump(self, payload: tuple[object, tuple[AflTable, FlkcTable]]) -> None:
+        token, (afl, flkc) = payload
+        if token is not self._afl_token:
+            return
+        self._afl_token = None
+        self.window.set_afl_busy(False)
+        self.window.set_afl_status(self._status)  # вернуть строку подключения после «Чтение…»
+        ecu = self.runner.poller.ecu_id if self.runner else ""
+        afl_ranges = tuple(self._rom_table_values("A/F Learning #1 Airflow Ranges"))
+        flkc = FlkcTable(
+            cells=flkc.cells,
+            rpm_axis=tuple(self._rom_table_values("Fine Correction Rows (RPM)")),
+            load_axis=tuple(self._rom_table_values("Fine Correction Columns (Load)")),
+        )
+        text = _learning_text(ecu, afl, afl_ranges, flkc)
+        if not self.window.show_afl_dump(text):
+            return
+        path = self.window.ask_afl_save_path(self._afl_suggested_name())
+        if not path:
+            return
+        try:
+            write_learning_csv(path, ecu, afl, afl_ranges, flkc)
+        except OSError as exc:
+            self.window.set_afl_error(tr("Таблица не сохранена: {error}", error=exc))
+            return
+        self.window.set_afl_status(tr("Таблицы обучения сохранены: {path}", path=path))
+
+    def _on_afl_error(self, payload: tuple[object, Exception]) -> None:
+        token, error = payload
+        if token is not self._afl_token:
+            return
+        self._afl_token = None
+        self.window.set_afl_busy(False)
+        self.window.set_afl_error(tr("Таблицы обучения не прочитаны: {error}", error=error))
+
+    def _afl_suggested_name(self) -> str:
+        return str(self.log_folder() / f"learning_{datetime.now():%Y%m%d_%H%M%S}.csv")
+
+    def _rom_table_values(self, name: str) -> list[float]:
+        """Значения 2D-таблицы ROM (столбец) в физических единицах; нет читателя — пусто."""
+        if self._rom_table_reader is None:
+            return []
+        return self._rom_table_reader(name)
+
     # --- Запись ---
 
     def log_root(self) -> Path:
@@ -566,6 +640,34 @@ class LoggerPresenter:
 
 def _dtc_rows(readings: list[DtcReading]) -> list[DtcRow]:
     return [DtcRow(r.code.id, r.code.name, r.current, r.stored) for r in readings]
+
+
+_AFL_ZONES = ("A", "B", "C", "D")
+
+
+def _learning_text(ecu_id: str, afl: AflTable, ranges: Sequence[float], flkc: FlkcTable) -> str:
+    """Текст таблиц обучения (A/F Learning #1 + кратко FLKC) для показа в окне."""
+    lines = [tr("A/F Learning #1 — {ecu}", ecu=ecu_id), ""]
+    air = [""] * len(_AFL_ZONES)
+    if len(ranges) == 3:
+        air = [
+            f"0 – {_fmt(ranges[0], 2)} г/с",
+            f"{_fmt(ranges[0], 2)} – {_fmt(ranges[1], 2)} г/с",
+            f"{_fmt(ranges[1], 2)} – {_fmt(ranges[2], 2)} г/с",
+            f"{_fmt(ranges[2], 2)} – … г/с",
+        ]
+    for i, zone in enumerate(_AFL_ZONES):
+        value = _fmt(afl.stored.get(zone, math.nan), 2)
+        label = f" ({air[i]})" if air[i] else ""
+        lines.append(f"{zone}{label}: {value} %")
+    lines.append("")
+    lines.append(tr("Текущее: {value} %", value=_fmt(afl.current, 2)))
+    lines.append(tr("Зона: {value}", value=str(afl.range_index) if afl.range_index else "—"))
+    rows = len(flkc.cells)
+    cols = len(flkc.cells[0]) if rows else 0
+    lines.append("")
+    lines.append(tr("FLKC: {rows} × {cols} ячеек (карта RPM × Load) — в CSV", rows=rows, cols=cols))
+    return "\n".join(lines)
 
 
 def _tooltip(param: LoggerParam) -> str:

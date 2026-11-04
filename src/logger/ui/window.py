@@ -100,6 +100,7 @@ class LoggerWindow(QWidget):
     open_logs_requested = pyqtSignal()
     dtc_read_requested = pyqtSignal()
     dtc_clear_requested = pyqtSignal()
+    afl_dump_requested = pyqtSignal()
     closed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -114,6 +115,7 @@ class LoggerWindow(QWidget):
         self._recording = False
         self._dtc_read = False  # коды прочитаны — сброс разрешён
         self._dtc_busy = False
+        self._afl_busy = False
 
         # --- Верхняя панель: порт, подключение, статус ---
         self._ports = QComboBox()
@@ -153,6 +155,10 @@ class LoggerWindow(QWidget):
         folder_btn.clicked.connect(self.choose_folder_requested)
         logs_btn = QPushButton(tr("Журнал адаптера…"))
         logs_btn.clicked.connect(self.open_logs_requested)
+        self._afl_btn = QPushButton(tr("Выгрузить таблицы обучения…"))
+        self._afl_btn.setToolTip(tr("Прочитать из ЭБУ A/F Learning (зоны топлива) и FLKC (карту детонации RPM × Load) и сохранить в CSV"))
+        self._afl_btn.setEnabled(False)
+        self._afl_btn.clicked.connect(self.afl_dump_requested)
         self._folder = QLabel("")
         self._folder.setStyleSheet("color: #555;")
         self._folder.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -163,6 +169,7 @@ class LoggerWindow(QWidget):
         record_row.addSpacing(12)
         record_row.addWidget(folder_btn)
         record_row.addWidget(logs_btn)
+        record_row.addWidget(self._afl_btn)
         record_row.addWidget(self._folder, 1)
 
         # --- Слева: выбор параметров ---
@@ -292,12 +299,14 @@ class LoggerWindow(QWidget):
         self._ports.setEnabled(not connected)
         self._record_btn.setEnabled(connected)
         self._mark_btn.setEnabled(connected)
+        self._afl_btn.setEnabled(connected and not self._afl_busy)
         if not connected:
             self._rate.setText("")
             self.set_recording(None)
             # Коды другого ЭБУ/сессии не показываем; сброс снова потребует чтения
             self._dtc_read = False
             self._dtc_busy = False
+            self._afl_busy = False
             self._dtc_tree.clear()
             self._dtc_status.setText("")
         self._update_dtc_buttons()
@@ -513,6 +522,39 @@ class LoggerWindow(QWidget):
             QMessageBox.StandardButton.No,
         )
         return answer == QMessageBox.StandardButton.Yes
+
+    # --- Таблица A/F Learning ---
+
+    def set_afl_busy(self, busy: bool, text: str = "") -> None:
+        """На время чтения таблицы кнопка заблокирована; text — что происходит."""
+        self._afl_busy = busy
+        if text:
+            self.set_afl_status(text)
+        self._afl_btn.setEnabled(self._connected and not busy)
+
+    def set_afl_status(self, text: str) -> None:
+        self._status.setStyleSheet("color: #555;")
+        self._status.setText(text)
+
+    def set_afl_error(self, text: str) -> None:
+        self.set_error(text)
+
+    def show_afl_dump(self, text: str) -> bool:
+        """Показать таблицы обучения и спросить, сохранить ли их в CSV."""
+        answer = QMessageBox.question(
+            self,
+            tr("Таблицы обучения"),
+            text + "\n\n" + tr("Сохранить в CSV?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def ask_afl_save_path(self, suggested: str) -> str | None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr("Сохранить таблицы обучения"), suggested, tr("CSV (*.csv)")
+        )
+        return path or None
 
     # --- Графики ---
 
