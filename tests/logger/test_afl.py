@@ -88,7 +88,7 @@ def test_read_learning_uses_kline_for_ram_when_can_rejects(defs: LoggerDefs) -> 
     flkc = poller.read_flkc()
     assert afl.stored["A"] == pytest.approx(-13.0)
     assert flkc.cells[6][4] == pytest.approx(34.0)
-    assert len(ecu.requests) - before <= 8  # AFL и FLKC по K-line, без CAN-перебора (~300 запросов)
+    assert len(ecu.requests) - before <= 12  # AFL и FLKC по K-line кусками, без CAN-перебора (~300)
 
 
 def test_write_learning_csv(tmp_path: Path) -> None:
