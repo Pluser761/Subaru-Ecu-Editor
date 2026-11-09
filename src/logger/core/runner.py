@@ -47,6 +47,10 @@ RETRY_PAUSE = 0.5
 FLUSH_PERIOD = 1.0
 # Как часто читать напряжение на OBD, с: для диагностики обрывов (провал/всплеск питания)
 VOLTAGE_PERIOD = 1.0
+# Сколько ждать остановки потока опроса, с. Всё I/O в нём ограничено таймаутами, а
+# переподключение прерывается interrupt() — поток обязан встать за секунды; если нет, это
+# ошибка, о которой стоит узнать в журнале, а не молча отпустить адаптер на фоне живого потока.
+STOP_TIMEOUT = 10.0
 
 
 @dataclass
@@ -111,7 +115,8 @@ class LoggerRunner:
             self.poller.select(selection)
 
     def mark(self) -> None:
-        self.poller.mark()
+        with self._lock:
+            self.poller.mark()
 
     def call(
         self,
@@ -169,8 +174,11 @@ class LoggerRunner:
     def stop(self) -> None:
         self._running.clear()
         self._stopped.set()
-        if self._thread is not None and self._thread is not threading.current_thread():
-            self._thread.join(timeout=5)
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=STOP_TIMEOUT)
+            if thread.is_alive():
+                log.error("logger runner did not stop within %.0f s", STOP_TIMEOUT)
         self._thread = None
         with self._calls_lock:
             pending, self._calls = self._calls, deque()

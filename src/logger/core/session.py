@@ -163,10 +163,12 @@ class Poller:
         return self.connection.init.ecu_id
 
     def select(self, selection: Sequence[tuple[str, str | None]]) -> None:
-        """Что опрашивать: [(id параметра, единицы или None — первые)]."""
+        """Что опрашивать: [(id параметра, единицы или None — первые)].
+
+        Время опроса не сбрасывается: графики и вкладка MAF живут по одной шкале,
+        а менять набор параметров можно и посреди сессии (не во время записи CSV)."""
         self.selection = [(self.defs.get(pid).id, units) for pid, units in selection]
         self._plan = self._build_plan()
-        self._start = time.monotonic()
 
     def mark(self) -> None:
         """Отметка события (хлопок и т.п.): попадёт в ближайший опрос."""
@@ -481,9 +483,14 @@ class Poller:
 
     def _update_status(self) -> None:
         self.slow.clear()
+        # unsupported пересчитываем каждый опрос: адрес мог снова начать читаться (после
+        # перезапуска ЭБУ), и пометка «ЭБУ не отдаёт» не должна висеть навсегда.
+        self.unsupported.clear()
         for param in self._plan.params:
             own = set(byte_addresses(param.addresses_for(self.ecu_id)))
-            if own & self._bad_addresses:
+            if not own:
+                self.unsupported.add(param.id)
+            elif own & self._bad_addresses:
                 if self._fallback is None:
                     self.unsupported.add(param.id)
                 else:

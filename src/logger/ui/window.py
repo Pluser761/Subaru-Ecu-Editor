@@ -1,5 +1,6 @@
 """Окно логгера: подключение, выбор параметров, запись и отметки; справа — вкладки
-«Дашборд» (плитка на каждый выбранный параметр) и «График» (график на каждый выбранный).
+«Дашборд» (плитка на каждый выбранный параметр), «График» (график на каждый выбранный)
+и «Ошибки» (DTC). Окно подгоняется по ширине и высоте под сетку плиток дашборда.
 
 Только виджеты и сигналы — логика в src/logger/presenter.py. Отдельное окно ОС.
 """
@@ -11,7 +12,7 @@ from dataclasses import dataclass, field
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QPoint, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QKeySequence, QShortcut
+from PyQt6.QtGui import QCloseEvent, QKeySequence, QResizeEvent, QShortcut, QShowEvent
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -23,6 +24,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTabWidget,
     QTreeWidget,
@@ -35,7 +37,12 @@ from src.i18n import tr
 from src.logger.ui.dashboard import Dashboard
 from src.logger.ui.profile_picker import ProfilePicker
 
-DEFAULT_SIZE = (1100, 720)
+DEFAULT_SIZE = (900, 600)
+MIN_SIZE = (700, 400)  # меньше — дерево параметров и плитки уже не помещаются
+SPLIT_LEFT = 380  # ширина дерева параметров при подгонке окна
+SPLIT_LEFT_MIN = 280  # уже — плитки начнут переноситься в одну колонку
+PANEL_CHROME = 32  # ручка сплиттера, рамка и поля вкладки вокруг дашборда
+CHROME_HEIGHT = 136  # верхние панели, вкладки и статус, если окно ещё не разложено
 GRAPH_SECONDS = 30.0
 PLOT_HEIGHT = 130  # высота одного графика: больше графиков — вкладка прокручивается
 _ROLE_ID = int(Qt.ItemDataRole.UserRole)
@@ -45,6 +52,7 @@ GRAPH_COLORS = ("#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#17becf"
 UNITS_COLUMN_WIDTH = 72
 # Ctrl на macOS Qt сам показывает и понимает как ⌘
 _PICK_KEY = QKeySequence("Ctrl+P")
+_MAF_KEY = QKeySequence("Ctrl+M")
 
 
 @dataclass
@@ -101,6 +109,7 @@ class LoggerWindow(QWidget):
     dtc_read_requested = pyqtSignal()
     dtc_clear_requested = pyqtSignal()
     afl_dump_requested = pyqtSignal()
+    maf_requested = pyqtSignal()  # открыть отдельное окно MAF-скейлинга
     closed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -108,14 +117,19 @@ class LoggerWindow(QWidget):
         self.setWindowTitle(tr("Логгер"))
         self.resize(*DEFAULT_SIZE)
         self._connected = False
+        self._connecting = False  # подключение идёт в фоне — кнопка «Отменить»
         self._live_ids: list[str] = []
         self._graphs: dict[str, _Graph] = {}
-        self._mark_times: list[float] = []
         self._filling = False  # программное заполнение дерева — не слать selection_changed
         self._recording = False
         self._dtc_read = False  # коды прочитаны — сброс разрешён
         self._dtc_busy = False
         self._afl_busy = False
+        # Подгонка окна под сетку плиток: пока пользователь не менял размер сам
+        self._auto_size = True
+        self._fitting = False
+        self._fit_done = False
+        self._fit_size: tuple[int, int] | None = None
 
         # --- Верхняя панель: порт, подключение, статус ---
         self._ports = QComboBox()
@@ -162,15 +176,25 @@ class LoggerWindow(QWidget):
         self._folder = QLabel("")
         self._folder.setStyleSheet("color: #555;")
         self._folder.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # Путь длинный, но строку не раздувает: иначе всё окно не сжать уже этого пути
+        self._folder.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        # Два ряда: иначе кнопки задают минимальную ширину окна (~800 px) и оно «широкое»
         record_row = QHBoxLayout()
         record_row.addWidget(self._record_btn)
         record_row.addWidget(self._mark_btn)
         record_row.addWidget(self._mark_flash)
         record_row.addSpacing(12)
-        record_row.addWidget(folder_btn)
-        record_row.addWidget(logs_btn)
-        record_row.addWidget(self._afl_btn)
         record_row.addWidget(self._folder, 1)
+        tools_row = QHBoxLayout()
+        tools_row.addWidget(folder_btn)
+        tools_row.addWidget(logs_btn)
+        tools_row.addWidget(self._afl_btn)
+        self._maf_btn = QPushButton(tr("MAF-скейлинг…"))
+        self._maf_btn.setToolTip(tr("Подбор скейлинга ДМРВ по топливным коррекциям ({key})", key=_MAF_KEY.toString(
+            QKeySequence.SequenceFormat.NativeText)))
+        self._maf_btn.clicked.connect(self.maf_requested)
+        tools_row.addWidget(self._maf_btn)
+        tools_row.addStretch(1)
 
         # --- Слева: выбор параметров ---
         self._filter = QLineEdit()
@@ -265,20 +289,72 @@ class LoggerWindow(QWidget):
         self._tabs.addTab(dtc_tab, tr("Ошибки"))
         right = self._tabs
 
-        split = QSplitter(Qt.Orientation.Horizontal)
-        split.addWidget(left)
-        split.addWidget(right)
-        split.setSizes([420, 680])
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.addWidget(left)
+        self._splitter.addWidget(right)
+        self._splitter.setSizes([SPLIT_LEFT, 680])
 
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addLayout(record_row)
-        layout.addWidget(split, 1)
+        layout.addLayout(tools_row)
+        layout.addWidget(self._splitter, 1)
 
         self._flash_timer = QTimer(self)
         self._flash_timer.setSingleShot(True)
         self._flash_timer.timeout.connect(lambda: self._mark_flash.setText(""))
         self._update_dtc_buttons()
+
+    # --- Размер окна ---
+
+    def showEvent(self, event: QShowEvent | None) -> None:
+        super().showEvent(event)
+        if not self._fit_done:
+            self._fit_done = True
+            self._fit_window()
+
+    def resizeEvent(self, event: QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        # Пользователь потянул за угол — дальше размер его, автоподгонку выключаем
+        if self._fit_done and not self._fitting and self._fit_size is not None:
+            if abs(self.width() - self._fit_size[0]) > 2 or abs(self.height() - self._fit_size[1]) > 2:
+                self._auto_size = False
+
+    def _fit_window(self) -> None:
+        """Подогнать окно под сетку плиток: ширина — по колонкам, высота — по строкам.
+
+        Число колонок — от количества выбранных параметров (почти квадратная сетка, до
+        четырёх). После ручного ресайза окно больше не трогаем."""
+        if not self._auto_size or not self.isVisible() or self.isMaximized() or self.isFullScreen():
+            return
+        grid_w, grid_h, _columns = self.dashboard.grid_size(len(self._live_ids))
+        left = self._splitter.sizes()[0] if self._splitter.sizes()[0] > 100 else SPLIT_LEFT
+        viewport = self.dashboard.viewport()
+        chrome_h = (
+            self.height() - viewport.height()
+            if viewport is not None and viewport.height() > 50
+            else CHROME_HEIGHT
+        )
+        width = left + grid_w + PANEL_CHROME
+        height = chrome_h + grid_h + 8
+        if self._tabs.currentIndex() != 0:
+            # На «Графике» и «Ошибках» высоту не подрезаем — подгоняем только ширину
+            height = max(height, self.height())
+        screen = self.screen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            width = min(max(width, MIN_SIZE[0]), max(MIN_SIZE[0], available.width() - 32))
+            height = min(max(height, MIN_SIZE[1]), max(MIN_SIZE[1], available.height() - 48))
+        else:
+            width = max(width, MIN_SIZE[0])
+            height = max(height, MIN_SIZE[1])
+        # Экран не дал развернуть окно — отдаём место плиткам, дерево поджимаем
+        left = min(left, max(SPLIT_LEFT_MIN, width - grid_w - PANEL_CHROME))
+        self._fitting = True
+        self.resize(width, height)
+        self._fitting = False
+        self._fit_size = (width, height)
+        self._splitter.setSizes([left, max(1, width - left)])
 
     # --- Подключение ---
 
@@ -296,6 +372,7 @@ class LoggerWindow(QWidget):
 
     def set_connected(self, connected: bool, status: str) -> None:
         self._connected = connected
+        self._connecting = False
         self._connect_btn.setText(tr("Отключить") if connected else tr("Подключить"))
         self._ports.setEnabled(not connected)
         self._record_btn.setEnabled(connected)
@@ -314,6 +391,18 @@ class LoggerWindow(QWidget):
         self._status.setStyleSheet("color: #555;")
         self._status.setText(status)
 
+    def set_connecting(self, on: bool, status: str = "") -> None:
+        """Подключение идёт в фоне: кнопка — «Отменить» (она же отменяет), порт менять нельзя."""
+        self._connecting = on
+        self._connect_btn.setText(
+            tr("Отменить") if on else (tr("Отключить") if self._connected else tr("Подключить"))
+        )
+        self._ports.setEnabled(not on)
+        self._connect_btn.setEnabled(True)
+        if status:
+            self._status.setStyleSheet("color: #555;")
+            self._status.setText(status)
+
     def set_error(self, text: str) -> None:
         self._status.setStyleSheet("color: #c03030;")
         self._status.setText(text)
@@ -322,7 +411,7 @@ class LoggerWindow(QWidget):
         self._rate.setText(tr("{rate} опр/с", rate=f"{rate:.1f}") if rate > 0 else "")
 
     def _toggle_connect(self) -> None:
-        if self._connected:
+        if self._connected or self._connecting:
             self.disconnect_requested.emit()
         else:
             port = self.current_port()
@@ -351,7 +440,6 @@ class LoggerWindow(QWidget):
     def flash_mark(self, time_s: float) -> None:
         self._mark_flash.setText(tr("● отметка"))
         self._flash_timer.start(800)
-        self._mark_times.append(time_s)
         for graph in self._graphs.values():
             graph.plot.addItem(pg.InfiniteLine(time_s, angle=90, pen=pg.mkPen(MARK_COLOR, width=1)))
 
@@ -391,19 +479,6 @@ class LoggerWindow(QWidget):
             if item.checkState(0) == Qt.CheckState.Checked:
                 out.append((str(item.data(0, _ROLE_ID)), item.text(1)))
         return out
-
-    def set_checked(self, units_by_id: dict[str, str | None]) -> None:
-        """Отметить ровно эти параметры (профиль); единицы — если заданы и есть у параметра."""
-        self._filling = True
-        for item in self._param_items():
-            pid = str(item.data(0, _ROLE_ID))
-            checked = pid in units_by_id and bool(item.flags() & Qt.ItemFlag.ItemIsEnabled)
-            item.setCheckState(0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
-            units = units_by_id.get(pid)
-            if checked and units and units in (item.data(1, _ROLE_ID) or []):
-                item.setText(1, units)
-        self._filling = False
-        self.selection_changed.emit()
 
     def _param_items(self) -> list[QTreeWidgetItem]:
         items = []
@@ -448,6 +523,7 @@ class LoggerWindow(QWidget):
         self._live_ids = [row.id for row in rows]
         self.dashboard.set_tiles([(row.id, row.name, row.unit) for row in rows])
         self._set_graphs([(row.id, f"{row.name}, {row.unit}") for row in rows])
+        self._fit_window()
 
     def set_row_state(self, pid: str, tooltip: str, slow: bool, unsupported: bool) -> None:
         tile = self.dashboard.tile(pid)

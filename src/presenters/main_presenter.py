@@ -17,6 +17,7 @@ from src.core.models import Axis, CalibrationTable, Checkpoint
 from src.core.session import RomSession
 from src.core.units import Conversion, TableUnits, UnitSystem
 from src.core.xml_reader import EcuDefsRepository
+from src.logger.core.maf import MAF_TABLE, MafTable
 from src.logger.presenter import LoggerPresenter, RomInfo
 from src.logger.ui.window import LoggerWindow
 from src.ui.app_settings import AppSettings
@@ -89,6 +90,7 @@ class MainPresenter:
         window.ai_notes_requested.connect(self.show_notes)
         window.open_defs_folder_requested.connect(self.open_defs_folder)
         window.open_logger_requested.connect(self.open_logger)
+        window.open_maf_requested.connect(self.open_maf)
         # Логгер — отдельное окно, создаётся при первом открытии
         self._logger: LoggerPresenter | None = None
         window.set_unit_system_checked(self._units_system)
@@ -408,12 +410,23 @@ class MainPresenter:
             return
         self._window.open_folder(folder)
 
+    def open_maf(self) -> None:
+        """MAF-скейлинг — отдельное окно (Cmd/Ctrl+M); подключение живёт в окне логгера.
+
+        Если логгер ещё не подключён, показываем и его: без опроса ЭБУ точки брать неоткуда."""
+        if self._logger is None or self._logger.runner is None:
+            self.open_logger()
+        if self._logger is not None:
+            self._logger.show_maf()
+
     def open_logger(self) -> None:
         """Логгер → Открыть логгер: отдельное окно; прошивка редактора — для сверки ЭБУ и имени лога."""
         if self._logger is None:
             self._logger = LoggerPresenter(
                 LoggerWindow(), self._settings, self._logger_rom_info,
                 rom_table_reader=self._logger_read_table,
+                maf_table=self._logger_maf_table,
+                maf_apply=self._logger_maf_apply,
             )
         window = self._logger.window
         window.show()
@@ -434,6 +447,47 @@ class MainPresenter:
         except (KeyError, AttributeError):
             return []
         return [row[0] for row in table.values]
+
+    def _logger_maf_table(self) -> MafTable | None:
+        """Таблица «MAF Sensor Scaling» открытой прошивки: ось (В) и расход (г/с).
+
+        Берётся точное имя, иначе вариант с хвостовым пробелом; «(Reference Only)» —
+        копия для справки, её не правим."""
+        parser = self._parser
+        if parser.file_path is None:
+            return None
+        names = [
+            info.name for info in parser.list_maps()
+            if info.name.strip().startswith(MAF_TABLE) and "Reference Only" not in info.name
+        ]
+        exact = [name for name in names if name.strip() == MAF_TABLE]
+        if not names:
+            return None
+        name = (exact or names)[0]
+        try:
+            table = parser.load_table(name)
+        except (KeyError, AttributeError):
+            return None
+        if not table.values or len(table.values[0]) != 1:
+            return None
+        axis = tuple(float(v) for v in table.y_axis)
+        values = tuple(float(row[0]) for row in table.values)
+        if not axis or len(axis) != len(values):
+            return None
+        return MafTable(name, axis, values)
+
+    def _logger_maf_apply(self, name: str, values: dict[int, float]) -> int:
+        """Записать новые значения строк (г/с) через RomSession: checkpoint даёт откат,
+        окно карты и дерево обновляются как после обычной правки."""
+        session = self._session
+        for row in sorted(values):
+            session.write_cell(name, row, 0, values[row])
+        editor = self._window.editor_view
+        if name in set(editor.open_maps()):
+            editor.reload_map(*self._display(name))
+        self._check_changed(name)
+        self._window.set_status(tr("MAF: обновлено строк {n}", n=len(values)))
+        return len(values)
 
     def stop_logger(self) -> None:
         if self._logger is not None:

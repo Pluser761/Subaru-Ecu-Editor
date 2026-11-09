@@ -44,6 +44,7 @@ class MainWindow(QMainWindow):
     ai_notes_requested = pyqtSignal()
     open_defs_folder_requested = pyqtSignal()
     open_logger_requested = pyqtSignal()
+    open_maf_requested = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -197,6 +198,13 @@ class MainWindow(QMainWindow):
         logger_action.setShortcut(QKeySequence("Ctrl+L"))
         logger_action.triggered.connect(self.open_logger_requested)
         logger_menu.addAction(logger_action)
+        # Отдельное окно: работает и когда активно окно логгера/MAF
+        self.maf_action = QAction(tr("MAF-скейлинг…"), self)
+        self.maf_action.setShortcut(QKeySequence("Ctrl+M"))
+        self.maf_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.maf_action.setToolTip(tr("Подбор скейлинга ДМРВ по топливным коррекциям"))
+        self.maf_action.triggered.connect(self.open_maf_requested)
+        logger_menu.addAction(self.maf_action)
 
         ai_menu = menu.addMenu(tr("&ИИ"))
         assert ai_menu is not None

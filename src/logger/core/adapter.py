@@ -5,9 +5,11 @@
 порт закрывается сразу, а следующее открытие ждёт RESET_PAUSE с момента сброса — в том числе
 новое подключение сразу после «Отключить».
 
-Потоки: open/reopen идут в одном потоке (подключение — в потоке интерфейса, переподключение —
-в потоке опроса), interrupt() можно звать из любого: он прерывает паузу и открытие порта
-переподключения, чтобы «Отключить» не ждал его до конца.
+Потоки: open()/reopen() идут в потоке интерфейса и в потоке опроса соответственно и никогда
+не пересекаются между собой, но close() из потока интерфейса может застать идущий reopen()
+в потоке опроса. Поэтому interrupt() можно звать из любого (он прерывает паузу и открытие
+порта переподключения), а close() держит `_open_lock` — тот же замок, что open() — и потому
+ждёт конца идущего open(), прежде чем трогать device/stream (OpenPort2 не потокобезопасен).
 """
 
 from __future__ import annotations
@@ -49,12 +51,17 @@ class Adapter:
         self.trace = trace
         self._reset_pause = reset_pause
         self._lock = threading.Lock()
+        self._open_lock = threading.Lock()  # занят на время open(); close() ждёт его конца
         self._closed = threading.Event()
         self._stream: ByteStream | None = None
         self._device: OpenPort2 | None = None
 
     def open(self) -> Opened:
         """Открыть порт, ati, напряжение, init ЭБУ (CAN, иначе K-line)."""
+        with self._open_lock:
+            return self._open()
+
+    def _open(self) -> Opened:
         global _last_reset
         wait = _last_reset + self._reset_pause - time.monotonic()
         if wait > 0 and self._closed.wait(wait):
@@ -92,7 +99,10 @@ class Adapter:
     def close(self) -> None:
         """Закрыть каналы, сбросить адаптер, закрыть порт и журнал. Цикл опроса уже остановлен."""
         self._closed.set()
-        self._release(close_channels=True)
+        # Дождаться конца идущего open()/reopen(): OpenPort2 не потокобезопасен, а сам open()
+        # после interrupt() прервётся за секунды (все I/O ограничены таймаутами).
+        with self._open_lock:
+            self._release(close_channels=True)
         if self.trace is not None:
             self.trace.close()
             self.trace = None

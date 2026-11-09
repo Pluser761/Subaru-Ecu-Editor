@@ -57,8 +57,20 @@ def logger(qapp, tmp_path: Path):  # type: ignore[no-untyped-def]
     presenter.window.close()
 
 
+def _wait_until(presenter: LoggerPresenter, condition, timeout: float = 3.0) -> None:  # type: ignore[no-untyped-def]
+    """Прокрутить цикл событий, пока идущее в фоне подключение не завершится."""
+    from PyQt6.QtWidgets import QApplication
+
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "timeout waiting for connect"
+        QApplication.instance().processEvents()
+        time.sleep(0.005)
+
+
 def _connect_without_thread(presenter: LoggerPresenter) -> None:
     presenter.connect(EMULATOR_PORT)
+    _wait_until(presenter, lambda: presenter.runner is not None)
     assert presenter.runner is not None
     presenter.runner.stop()  # опрос в тесте — вручную, step()
 
@@ -79,7 +91,7 @@ def test_connect_shows_only_supported(logger: LoggerPresenter) -> None:
 def test_live_values_record_and_mark(logger: LoggerPresenter, tmp_path: Path) -> None:
     _connect_without_thread(logger)
     window = logger.window
-    window.set_checked({"P8": None, "E9002": None})
+    logger.apply_profile([ProfileItem("P8", None), ProfileItem("E9002", None)])
     runner = logger.runner
     assert runner is not None and [pid for pid, _u in runner.poller.selection] == ["P8", "E9002"]
     runner.step()
@@ -133,12 +145,14 @@ def test_failed_connect_reports_error(qapp, tmp_path: Path) -> None:  # type: ig
     presenter = LoggerPresenter(LoggerWindow(), FakeSettings(tmp_path), find_ports=lambda: ["/dev/x"],
                                 open_port=broken)
     presenter.connect("/dev/x")
+    _wait_until(presenter, lambda: "port busy" in presenter.window._status.text())
     assert presenter.runner is None and "port busy" in presenter.window._status.text()
 
 
 def test_connect_without_adapter_shows_hint(qapp, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     presenter = LoggerPresenter(LoggerWindow(), FakeSettings(tmp_path), find_ports=lambda: [])
     presenter.connect("/dev/x")  # порта нет — адаптер не найден в USB
+    _wait_until(presenter, lambda: "не найден" in presenter.window._status.text())
     assert "не найден" in presenter.window._status.text()
 
 
@@ -148,6 +162,7 @@ def test_connect_failure_is_logged(
     presenter = LoggerPresenter(LoggerWindow(), FakeSettings(tmp_path), find_ports=lambda: [])
     with caplog.at_level("INFO"):
         presenter.connect("/dev/x")
+        _wait_until(presenter, lambda: "не найден" in presenter.window._status.text())
     assert "connect failed" in caplog.text
 
 
@@ -178,7 +193,7 @@ def test_link_status_shows_outage_and_drops(logger: LoggerPresenter) -> None:
     runner = logger.runner
     assert runner is not None
     window = logger.window
-    window.set_checked({"P8": None})
+    logger.apply_profile([ProfileItem("P8", None)])
     runner.step()
     runner.link.drops, runner.link.attempts, runner.link.lost_since = 1, 3, time.monotonic() - 12
     logger._refresh()
@@ -194,7 +209,7 @@ def test_silent_adapter_suggests_usb_replug(logger: LoggerPresenter) -> None:
     runner = logger.runner
     assert runner is not None
     window = logger.window
-    window.set_checked({"P8": None})
+    logger.apply_profile([ProfileItem("P8", None)])
     runner.step()
     runner.link.lost_since = time.monotonic()
     runner.link.last_error = OpenPortError("OpenPort: no reply to ati", NO_REPLY)

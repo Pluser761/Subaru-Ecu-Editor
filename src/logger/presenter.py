@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -19,12 +20,24 @@ from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 
 from src.i18n import N_, tr
-from src.logger.core.adapter import Adapter
+from src.logger.core.adapter import Adapter, Opened
 from src.logger.core.csv_log import write_learning_csv
 from src.logger.core.defs import LoggerDefs, LoggerParam
+from src.logger.core.maf import (
+    COLLECT_IDS,
+    MAX_POINTS,
+    REQUIRED_IDS,
+    MafCollector,
+    MafTable,
+    MafTrend,
+    fit_trend,
+    scale_values,
+    trend_curve,
+)
 from src.logger.core.params import decimals
 from src.logger.core.paths import default_logs_root, rom_log_dir
 from src.logger.core.profile import ProfileItem, list_profiles, load_profile, save_profile
+from src.logger.ui.maf import MafWindow
 from src.logger.core.runner import LinkStats, LoggerRunner
 from src.logger.core.session import AflTable, Connection, DtcReading, FlkcTable, Poller, Sample, connect
 from src.logger.core.trace import Trace
@@ -86,10 +99,12 @@ class LoggerSettings(Protocol):
 
 
 class _Bridge(QObject):
-    """Из потока опроса в поток интерфейса."""
+    """Из потоков подключения/опроса в поток интерфейса."""
 
     sample = pyqtSignal(object)
     error = pyqtSignal(object)
+    connect_opened = pyqtSignal(object)
+    connect_failed = pyqtSignal(object)
     dtc_read = pyqtSignal(object)
     dtc_cleared = pyqtSignal(object)
     dtc_error = pyqtSignal(object)
@@ -107,6 +122,8 @@ class LoggerPresenter:
         find_ports: Callable[[], list[str]] | None = None,
         open_port: Callable[[str], ByteStream] | None = None,
         rom_table_reader: Callable[[str], list[float]] | None = None,
+        maf_table: Callable[[], MafTable | None] | None = None,
+        maf_apply: Callable[[str, dict[int, float]], int] | None = None,
     ) -> None:
         self.window = window
         self._settings = settings
@@ -114,12 +131,16 @@ class LoggerPresenter:
         self._find_ports = find_ports or _find_openport
         self._open_port = open_port or _open_serial
         self._rom_table_reader = rom_table_reader
+        self._maf_table = maf_table
+        self._maf_apply = maf_apply
         extra: list[tuple[str | Path, str]] = [(LOGGER_EXTRA, "extra")]
         if settings is not None:
             extra.append((settings.logger_extra_dir, "user"))
         self.defs = LoggerDefs.load(LOGGER_DEFS, extra)
         self._adapter: Adapter | None = None
         self.connection: Connection | None = None
+        self._connect_token: object | None = None  # текущее подключение (защита от устаревшего ответа)
+        self._connecting_port: str | None = None  # порт идущего подключения (для настроек)
         self._status = ""  # строка состояния подключения (без обрывов)
         self._shown_status = ""
         self._trace_path: Path | None = None  # текущий trace-файл (для показа в ошибке)
@@ -132,9 +153,26 @@ class LoggerPresenter:
         self._dtc_token: object | None = None  # текущее чтение/сброс кодов
         self._dtc_read_done = False  # коды прочитаны — сброс разрешён
         self._afl_token: object | None = None  # текущая выгрузка таблицы A/F Learning
+        # Вкладка MAF: точки копит сборщик, кривая — полином по ним
+        self.maf = MafCollector()
+        self._maf_active = False
+        self._maf_added: list[str] = []  # параметры, добавленные в опрос ради точек (в дереве их нет)
+        self._maf_trend: MafTrend | None = None
+        self._maf_xs: list[float] = []  # точки для графика (растут инкрементально)
+        self._maf_ys: list[float] = []
+        self._maf_shown = 0  # сколько точек уже отдано окну
+        # MAF-скейлинг — отдельное окно: живёт рядом с дашбордом, данные из этого же опроса
+        self.maf_window = MafWindow()
+        self.maf_window.record_toggled.connect(self._on_maf_record)
+        self.maf_window.interpolate_requested.connect(self.interpolate_maf)
+        self.maf_window.apply_requested.connect(self.apply_maf)
+        self.maf_window.reset_requested.connect(self.reset_maf)
+        self.maf_window.closed.connect(self._on_maf_closed)
         self._bridge = _Bridge()
         self._bridge.sample.connect(self._on_sample)
         self._bridge.error.connect(self._on_error)
+        self._bridge.connect_opened.connect(self._on_connect_opened)
+        self._bridge.connect_failed.connect(self._on_connect_failed)
         self._bridge.dtc_read.connect(self._on_dtc_read)
         self._bridge.dtc_cleared.connect(self._on_dtc_cleared)
         self._bridge.dtc_error.connect(self._on_dtc_error)
@@ -163,6 +201,7 @@ class LoggerPresenter:
         w.dtc_read_requested.connect(self.read_dtc)
         w.dtc_clear_requested.connect(self.clear_dtc)
         w.afl_dump_requested.connect(self.dump_afl)
+        w.maf_requested.connect(self.show_maf)
         w.closed.connect(self.disconnect)
         self.refresh_ports()
         self._fill_tree(set())
@@ -177,6 +216,7 @@ class LoggerPresenter:
         self.window.set_ports(ports, current)
 
     def connect(self, port: str) -> None:
+        """Начать подключение в фоновом потоке: открытие порта и init ЭБУ не блокируют GUI."""
         self.disconnect()
         self._trace_path = None
         if port == EMULATOR_PORT:
@@ -188,22 +228,39 @@ class LoggerPresenter:
         else:
             adapter = Adapter(lambda: self._open_port(self._current_path(port)), self._open_trace())
         self._adapter = adapter
-        try:
-            opened = adapter.open()
-            self.connection = opened.connection
-        except Exception as exc:  # noqa: BLE001 — показать в окне; порт закрыть
-            self._close_port()
-            log.warning("connect failed: port %s: %s", port, exc)
-            self.window.set_connected(False, tr("Не подключено"))
-            if isinstance(exc, OpenPortNotFound):
-                self.window.set_error(tr("OpenPort 2.0 не найден — проверьте USB-подключение"))
-            elif isinstance(exc, OpenPortError) and exc.code == NO_REPLY:
-                self.window.set_error(tr("Адаптер не отвечает — отключите и снова подключите его USB"))
+        token = object()
+        self._connect_token = token
+        self._connecting_port = port
+        self.window.set_connecting(True, tr("Подключение…"))
+
+        def run() -> None:
+            try:
+                opened = adapter.open()
+            except Exception as exc:  # noqa: BLE001 — показать в окне; порт закрыть
+                # Закрыть полуоткрытый адаптер в этом же потоке: GUI не должен ждать его
+                try:
+                    adapter.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._bridge.connect_failed.emit((token, exc))
             else:
-                self.window.set_error(tr("Не удалось подключиться: {error}", error=exc))
+                self._bridge.connect_opened.emit((token, opened, adapter))
+
+        threading.Thread(target=run, name="logger-connect", daemon=True).start()
+
+    def _on_connect_opened(self, payload: tuple[object, Opened, Adapter]) -> None:
+        token, opened, adapter = payload
+        if token is not self._connect_token:
+            # Пока открывали порт, отключились или начали другое подключение — закрыть адаптер
+            try:
+                adapter.close()
+            except Exception:  # noqa: BLE001
+                pass
             return
-        if self._settings is not None:
-            self._settings.set_logger_port(port)
+        self._connect_token = None
+        self.connection = opened.connection
+        if self._settings is not None and self._connecting_port is not None:
+            self._settings.set_logger_port(self._connecting_port)
         self._supported = {p.id for p in self.defs.supported(self.connection.init)}
         self.runner = LoggerRunner(
             Poller(self.connection, self.defs), self._bridge.sample.emit, self._bridge.error.emit,
@@ -217,14 +274,37 @@ class LoggerPresenter:
         self.runner.start()
         self._timer.start()
 
+    def _on_connect_failed(self, payload: tuple[object, Exception]) -> None:
+        token, error = payload
+        if token is not self._connect_token:
+            return  # отключились/переключились — адаптер уже закрыл поток подключения
+        self._connect_token = None
+        self._close_port()
+        log.warning("connect failed: port %s: %s", self._connecting_port, error)
+        self.window.set_connected(False, tr("Не подключено"))
+        if isinstance(error, OpenPortNotFound):
+            self.window.set_error(tr("OpenPort 2.0 не найден — проверьте USB-подключение"))
+        elif isinstance(error, OpenPortError) and error.code == NO_REPLY:
+            self.window.set_error(tr("Адаптер не отвечает — отключите и снова подключите его USB"))
+        else:
+            self.window.set_error(tr("Не удалось подключиться: {error}", error=error))
+
     def disconnect(self) -> None:
+        self._maf_active = False
+        self._maf_added = []
+        self._clear_maf()  # точки другой сессии/ЭБУ не смешивать с новыми
+        self.maf_window.set_recording(False)
         self._timer.stop()
         self._status_timer.stop()
         self._dtc_token = None  # ответы на чтение/сброс, пришедшие позже, игнорируются
         self._afl_token = None  # ответ на выгрузку A/F Learning, пришедший позже, игнорируется
         self._dtc_read_done = False
-        if self._adapter is not None:
-            self._adapter.interrupt()  # не ждать переподключения, если оно идёт
+        connecting = self._connect_token is not None
+        self._connect_token = None  # результат идущего подключения игнорируется
+        adapter = self._adapter
+        self._adapter = None
+        if adapter is not None:
+            adapter.interrupt()  # прервать переподключение/подключение, не ждать его конца
         if self.runner is not None:
             path = self.runner.stop_recording()
             self.runner.stop()
@@ -232,7 +312,11 @@ class LoggerPresenter:
             if path is not None:
                 self.window.set_log_folder(str(path))
         self.connection = None
-        self._close_port()
+        if adapter is not None and not connecting:
+            # Нет идущего подключения — закрыть сразу; при идущем его закрывает поток
+            # подключения (или _on_connect_opened для устаревшего успеха), иначе GUI
+            # снова ждал бы конца open().
+            adapter.close()
         if self._supported is not None:
             self._supported = None
             self._fill_tree({pid for pid, _units in self.window.selected()})
@@ -308,12 +392,26 @@ class LoggerPresenter:
         # Всё отмеченное слева — и на дашборд, и на график
         self.window.set_live_rows([LiveRow(pid, self.defs.get(pid).name, units) for pid, units in selected])
         if self.runner is not None:
-            self.runner.select([(pid, units) for pid, units in selected])
+            # Параметры, нужные вкладке MAF, опрашиваются, но на дашборд/график не попадают
+            ids = {pid for pid, _units in selected}
+            selection: list[tuple[str, str | None]] = [(pid, units) for pid, units in selected]
+            selection += [(pid, None) for pid in self._maf_added if pid not in ids]
+            if selection != self.runner.poller.selection:
+                self.runner.select(selection)
 
     # --- Опрос ---
 
     def _on_sample(self, sample: Sample) -> None:
         self._latest = sample
+        if self._maf_active:
+            self.maf.filters = self.maf_window.filters()
+            point = self.maf.accept(sample.values, sample.time_ms)
+            if point is not None:
+                self._maf_xs.append(point.volts)
+                self._maf_ys.append(point.trim)
+                if len(self._maf_xs) > MAX_POINTS:
+                    del self._maf_xs[: len(self._maf_xs) - MAX_POINTS]
+                    del self._maf_ys[: len(self._maf_ys) - MAX_POINTS]
         for pid, value in sample.values.items():
             if math.isnan(value):
                 continue
@@ -355,6 +453,7 @@ class LoggerPresenter:
         self.window.set_rate(runner.rate)
         self._show_link(runner)
         self.window.redraw_graphs(sample.time_ms / 1000)
+        self._refresh_maf()
 
     def _show_link(self, runner: LoggerRunner) -> None:
         """Строка состояния: обрыв идёт — сколько длится и какая попытка; после — счётчик."""
@@ -551,6 +650,146 @@ class LoggerPresenter:
         self.window.set_afl_busy(False)
         self._show_status_temporarily(tr("Таблицы обучения не прочитаны: {error}", error=error), error=True)
 
+    # --- Вкладка MAF ---
+
+    def show_maf(self) -> None:
+        """Показать окно MAF-скейлинга (Cmd/Ctrl+M или кнопка в логгере)."""
+        self.maf_window.show()
+        self.maf_window.raise_()
+        self.maf_window.activateWindow()
+
+    def _on_maf_closed(self) -> None:
+        """Окно закрыли: точки не собираем, скрытые параметры из опроса убираем."""
+        self._maf_active = False
+        self.maf_window.set_recording(False)
+        self._remove_maf_params()
+
+    def _on_maf_record(self, on: bool) -> None:
+        """Запись точек: нужные параметры добавляются в опрос скрыто (в дереве их нет)."""
+        if not on:
+            self._maf_active = False
+            self._remove_maf_params()
+            return
+        if self.runner is None:
+            self.maf_window.set_recording(False)
+            self.maf_window.set_info(tr("Сначала подключитесь к ЭБУ"), error=True)
+            return
+        wanted = self._maf_param_ids()
+        missing = [pid for pid in REQUIRED_IDS if pid not in wanted]
+        if missing:
+            self.maf_window.set_recording(False)
+            self.maf_window.set_info(
+                tr("ЭБУ не отдаёт параметры для точек: {ids}", ids=", ".join(missing)), error=True)
+            return
+        selected = {pid for pid, _units in self.window.selected()}
+        self._maf_added = [pid for pid in wanted if pid not in selected]
+        self._maf_active = True
+        try:
+            self._apply_selection()
+        except RuntimeError:
+            # Идёт запись CSV: колонки на ходу не меняются — без параметров точку не собрать
+            self._maf_added = []
+            self._maf_active = False
+            self.maf_window.set_recording(False)
+            self.maf_window.set_info(
+                tr("Пока пишется лог, набор параметров менять нельзя — остановите запись"), error=True)
+            return
+        self.maf_window.set_info(tr("Запись точек включена"))
+
+    def _remove_maf_params(self) -> None:
+        added, self._maf_added = self._maf_added, []
+        if not added or self.runner is None:
+            return
+        try:
+            self._apply_selection()
+        except RuntimeError:
+            self._maf_added = added  # запись CSV: убрать нельзя, останутся в опросе до её конца
+
+    def _maf_param_ids(self) -> list[str]:
+        """Что ЭБУ реально отдаёт из нужного вкладке (после подключения — по битам init)."""
+        return [
+            pid for pid in COLLECT_IDS
+            if pid in self.defs.params and (self._supported is None or pid in self._supported)
+        ]
+
+    def _refresh_maf(self) -> None:
+        if len(self._maf_xs) == self._maf_shown:
+            return
+        self.maf_window.set_points(self._maf_xs, self._maf_ys)
+        self._maf_shown = len(self._maf_xs)
+        self.maf_window.set_info(tr("Точек: {n}", n=self._maf_shown))
+
+    def interpolate_maf(self, order: int) -> None:
+        """Подогнать полином степени order по накопленным точкам и показать кривую."""
+        points = self.maf.points
+        if len(points) < order + 1:
+            self.maf_window.set_info(
+                tr("Для степени {order} нужно не меньше {need} точек, а собрано {n}",
+                   order=order, need=order + 1, n=len(points)), error=True)
+            return
+        volts = {round(p.volts, 3) for p in points}
+        if len(volts) < 2:
+            self.maf_window.set_info(tr("Все точки на одном напряжении — кривую не построить"), error=True)
+            return
+        try:
+            trend = fit_trend(points, order)
+        except Exception as exc:  # noqa: BLE001 — показать в окне, не ронять логгер
+            self.maf_window.set_info(tr("Кривую не построить: {error}", error=exc), error=True)
+            return
+        self._maf_trend = trend
+        low, high = min(volts), max(volts)
+        grid = [low + (high - low) * i / 199 for i in range(200)]
+        xs, ys = trend_curve(trend, grid)
+        self.maf_window.set_curve(xs, ys)
+        self.maf_window.set_info(tr("Кривая степени {order} по {n} точкам", order=order, n=len(points)))
+
+    def apply_maf(self, low: float, high: float) -> None:
+        """Записать новые значения строк «MAF Sensor Scaling» в открытую прошивку."""
+        trend = self._maf_trend
+        if trend is None:
+            self.maf_window.set_info(tr("Сначала постройте кривую (Интерполировать)"), error=True)
+            return
+        if not low < high:
+            self.maf_window.set_info(tr("Минимум напряжения должен быть меньше максимума"), error=True)
+            return
+        if self._maf_table is None or self._maf_apply is None:
+            self.maf_window.set_info(tr("Прошивка не открыта в редакторе"), error=True)
+            return
+        table = self._maf_table()
+        if table is None:
+            self.maf_window.set_info(tr("В этой прошивке нет таблицы «MAF Sensor Scaling»"), error=True)
+            return
+        try:
+            values = scale_values(table, low, high, trend)
+        except ValueError:
+            self.maf_window.set_info(tr("Таблица не изменена"), error=True)
+            return
+        if not values:
+            self.maf_window.set_info(
+                tr("В диапазоне {low}–{high} В нет строк таблицы", low=f"{low:.2f}", high=f"{high:.2f}"),
+                error=True)
+            return
+        try:
+            written = self._maf_apply(table.name, values)
+        except Exception as exc:  # noqa: BLE001 — показать в окне, не ронять логгер
+            self.maf_window.set_info(tr("Таблица не обновлена: {error}", error=exc), error=True)
+            return
+        self.maf_window.set_info(
+            tr("Обновлено строк: {n} — откат: «Карты» → «Откатить все карты к checkpoint…»", n=written))
+
+    def reset_maf(self) -> None:
+        self._clear_maf()
+        self.maf_window.set_info(tr("Точки сброшены"))
+
+    def _clear_maf(self) -> None:
+        """Сбросить собранные точки и кривую без сообщения в статусе (отключение, новая сессия)."""
+        self.maf.clear()
+        self._maf_xs.clear()
+        self._maf_ys.clear()
+        self._maf_trend = None
+        self._maf_shown = 0
+        self.maf_window.clear()
+
     def _afl_suggested_name(self) -> str:
         return str(self.log_folder() / f"learning_{datetime.now():%Y%m%d_%H%M%S}.csv")
 
@@ -578,6 +817,9 @@ class LoggerPresenter:
         if not on:
             path = self.runner.stop_recording()
             self.window.set_recording(None)
+            # Набор параметров снова можно менять: убрать отложенные скрытые параметры MAF
+            if not self._maf_active:
+                self._remove_maf_params()
             if path is not None:
                 self.window.set_log_folder(str(self.log_folder()))
                 self.window.set_connected(True, tr("Лог сохранён: {path}", path=path))
@@ -645,6 +887,10 @@ class LoggerPresenter:
         self.apply_profile(items)
 
     def apply_profile(self, items: list[ProfileItem]) -> None:
+        if self.runner is not None and self.runner.recording is not None:
+            # Колонки CSV зафиксированы на старте записи — набор менять нельзя
+            self.window.set_error(tr("Пока пишется лог, набор параметров менять нельзя — остановите запись"))
+            return
         known = [item for item in items if item.id in self.defs.params]
         for item in known:
             if item.units:
